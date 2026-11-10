@@ -78,6 +78,16 @@ next_latents = next_latents.to(_input_dtype).float()
 
 The round-trip ensures that the precision of stored latents matches what training will see — without it, float32 scheduler output stored as bf16 loses precision, and the training replay produces different `log_prob`.
 
+## Native CP replay and normalization versions
+
+Torch 2.12+ CUDA autocast promotes native RMSNorm outputs to FP32. Preserve that native behavior;
+TP across-head replacements must match it rather than always casting back to BF16. Diffusers
+0.42 native CP backward needs the forward autocast context restored, because saved Q/K/V precede
+SDPA's autocast. The compatibility owner is `models/parallelism/autocast.py`; preparation installs
+it before CP forwards. Explicit FP32 attention accepts supported mixed operand dtypes while
+retaining device checks and query-typed output. Numerical qualification and backport removal:
+[torch210-214.md](../../../docs/development/validation/torch210-214.md).
+
 ## Diagnosis Checklist
 
 | Symptom | Check |

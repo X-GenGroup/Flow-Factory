@@ -15667,3 +15667,159 @@ cases:
     packages: [torch, diffusers]
     environment: {CUDA_VISIBLE_DEVICES: '-1'}
     model_paths: []
+
+- id: cp-autocast-contracts
+  covers:
+  - precision.cp_autocast.cpu
+  facets:
+  - model_runtime
+  - parity
+  - runtime_state
+  owners: &precision_id001
+  - src/flow_factory/models/parallelism/autocast.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_cp_autocast.py
+  - -k
+  - not cuda
+  fixture: Native Diffusers CP operations replay enabled/disabled and multiple outstanding forward autocast
+    contexts against ordinary SDPA derivatives.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact output and every Q/K/V derivative, opposite ambient backward context, version bounds
+      and idempotent installation.
+  artifacts:
+  - src/flow_factory/models/parallelism/autocast.py
+  - tests/models/test_cp_autocast.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: cp-autocast-cuda
+  covers:
+  - precision.cp_autocast.cuda
+  facets:
+  - model_runtime
+  - parity
+  - runtime_state
+  owners: *precision_id001
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_cp_autocast.py
+  - -k
+  - cuda
+  fixture: CUDA native CP operations replay enabled and disabled autocast against ordinary SDPA derivatives.
+  fixture_kind: synthetic
+  qa: Q1
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Exact CUDA outputs and all Q/K/V derivatives under opposite ambient backward autocast;
+      no distributed transport is claimed.
+  artifacts:
+  - src/flow_factory/models/parallelism/autocast.py
+  - tests/models/test_cp_autocast.py
+  cost_seconds: 15
+  resources:
+    gpus: 1
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: tp-rmsnorm-autocast
+  covers:
+  - precision.norm_autocast
+  facets:
+  - distributed
+  - parity
+  - model_runtime
+  owners:
+  - src/flow_factory/models/parallelism/autocast.py
+  - src/flow_factory/models/parallelism/tensor.py
+  - src/flow_factory/models/parallelism/guards.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_rmsnorm_autocast.py
+  fixture: Two CUDA ranks compare native and TP RMSNorm in FP16/BF16 with AMP on/off, paired/unpaired
+    Q/K and checkpoint replay.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: tp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Output dtype, elementwise output/input/weight gradients and relative errors against the
+      same-version native RMSNorm for sixteen cases per rank.
+  artifacts:
+  - src/flow_factory/models/parallelism/autocast.py
+  - src/flow_factory/models/parallelism/tensor.py
+  - src/flow_factory/models/parallelism/guards.py
+  - tests/distributed/test_rmsnorm_autocast.py
+  - tests/distributed/conftest.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 30
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []

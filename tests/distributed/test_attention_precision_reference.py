@@ -26,9 +26,11 @@ from attention_precision_reference import (
 )
 
 
-def _row(*, cancellation=False):
+def _row(*, cancellation=False, fp32_operands=False):
     torch.manual_seed(872)
     values = [torch.randn(1, 2, length, 8).bfloat16().float() for length in (4, 8, 8, 4)]
+    if fp32_operands:
+        values = [value + torch.randn_like(value) * 1e-4 for value in values]
     query, key, value, upstream = values
     if cancellation:
         value[..., 1::2, :] = -value[..., ::2, :]
@@ -43,9 +45,10 @@ def _row(*, cancellation=False):
     return row, lse
 
 
+@pytest.mark.parametrize("fp32_operands", [False, True])
 @pytest.mark.parametrize("cancellation", [False, True])
-def test_reference_matches_fp64_autograd_and_encloses_fp32_derivatives(cancellation):
-    row, lse = _row(cancellation=cancellation)
+def test_reference_matches_fp64_autograd_and_encloses_fp32_derivatives(cancellation, fp32_operands):
+    row, lse = _row(cancellation=cancellation, fp32_operands=fp32_operands)
     reference, budgets = attention_vjp_reference(row, lse)
     values = [row[key].double().requires_grad_() for key in ("q", "k", "v")]
     output = F.scaled_dot_product_attention(*values)
@@ -56,8 +59,9 @@ def test_reference_matches_fp64_autograd_and_encloses_fp32_derivatives(cancellat
         assert_attention_derivative(row[key], reference[key], budgets[key])
 
 
-def test_budget_is_independent_of_observed_derivatives_and_rejects_local_corruption():
-    row, lse = _row()
+@pytest.mark.parametrize("fp32_operands", [False, True])
+def test_budget_is_independent_of_observed_derivatives_and_rejects_local_corruption(fp32_operands):
+    row, lse = _row(fp32_operands=fp32_operands)
     reference, budgets = attention_vjp_reference(row, lse)
     corrupted = dict(row)
     for key in ("dq", "dk", "dv"):
@@ -99,7 +103,7 @@ def test_fast_f32_one_exact_operand_and_underflow_terms():
     assert bool((tiny @ tiny.T <= fast_f32_gemm_budget(tiny, tiny.T)).all())
 
 
-@pytest.mark.parametrize("mutation", ["nan", "non_bf16", "subnormal", "invalid_lse"])
+@pytest.mark.parametrize("mutation", ["nan", "invalid_dtype", "subnormal", "invalid_lse"])
 def test_reference_refuses_inputs_outside_its_arithmetic_contract(mutation):
     row, lse = _row()
     if mutation == "invalid_lse":
@@ -109,6 +113,6 @@ def test_reference_refuses_inputs_outside_its_arithmetic_contract(mutation):
     elif mutation == "subnormal":
         row["q"].flatten()[0] = torch.finfo(torch.float32).tiny / 2
     else:
-        row["q"].flatten()[0] = 1.0001
+        row["q"] = row["q"].double()
     with pytest.raises(AssertionError):
         attention_vjp_reference(row, lse)

@@ -220,3 +220,42 @@ def test_policy_selection_is_explicit_and_rejects_unsupported_backends():
 def test_invalid_policy_argument(value):
     with pytest.raises(ValueError, match="compute_precision_policy"):
         ModelArguments(compute_precision_policy=value)
+
+
+@pytest.mark.parametrize(
+    "dtypes",
+    [
+        (torch.float32, torch.float32, torch.bfloat16),
+        (torch.float32, torch.float16, torch.float16),
+        (torch.bfloat16, torch.float32, torch.bfloat16),
+    ],
+)
+def test_mixed_inputs_keep_fp32_compute_and_query_typed_output(dtypes):
+    root, policy = model()
+    apply_compute_precision_policy(root, policy)
+    torch.manual_seed(117)
+    inputs = [torch.randn(1, 2, 5, 8).to(dtype).requires_grad_() for dtype in dtypes]
+    reference = [x.detach().clone().requires_grad_() for x in inputs]
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        actual = root["selected"](*inputs)
+    expected = F.scaled_dot_product_attention(*(x.float() for x in reference)).to(dtypes[0])
+    upstream = torch.randn_like(actual)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for left, right in zip(
+        torch.autograd.grad(actual, inputs, upstream),
+        torch.autograd.grad(expected, reference, upstream),
+    ):
+        torch.testing.assert_close(left, right, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.parametrize("invalid", ["float64", "int64", "device"])
+def test_mixed_input_validation_checks_every_operand(position, invalid):
+    from flow_factory.models.compute_precision import _sdpa_float32
+
+    inputs = [torch.randn(1, 2, 5, 8) for _ in range(3)]
+    inputs[position] = inputs[position].to(
+        "meta" if invalid == "device" else getattr(torch, invalid)
+    )
+    with pytest.raises(ValueError, match="FP16/BF16/FP32"):
+        _sdpa_float32(F.scaled_dot_product_attention, *inputs)

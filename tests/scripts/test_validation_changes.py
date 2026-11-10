@@ -246,3 +246,144 @@ def test_export_bridge_preserves_constants_and_module_execution(bindings):
     resolver = changes.ImportBindings(sources.get)
     assert changes.export_bridge(path, before + "FLAG = True\n", sources[path], resolver)
     assert not changes.export_bridge(path, before + "FLAG = False\n", sources[path], resolver)
+
+
+@pytest.mark.parametrize(
+    "path,changed,required,fallback",
+    [
+        (
+            "src/flow_factory/models/parallelism/tensor.py",
+            "ShardedAcrossHeadRMSNorm._apply",
+            "precision.norm_autocast",
+            "parallel.tp_parity",
+        ),
+        (
+            "src/flow_factory/models/parallelism/guards.py",
+            "_install_norm_pair",
+            "precision.norm_autocast",
+            "parallel.tp_parity",
+        ),
+        (
+            "src/flow_factory/trainers/common/model_preparation.py",
+            "ModelPreparation._apply_context_parallel",
+            "precision.cp_autocast.cuda",
+            "preparation.variant_tp",
+        ),
+    ],
+)
+def test_native_autocast_routes_keep_unknown_changes_conservative(
+    path, changed, required, fallback
+):
+    import yaml
+
+    policy = yaml.safe_load((planner.ROOT / planner.POLICY).read_text())
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "scope_complete": True,
+        "semantic_symbols": {path: [changed]},
+    }
+    focused = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert required in focused and fallback not in focused
+    for unknown in ("unmapped_helper", "<module>"):
+        scope["semantic_symbols"][path] = [changed, unknown]
+        broad = planner.infer_requirements(scope, policy, {})["obligations"]
+        assert fallback in broad
+
+
+def test_reviewed_leaf_helper_keeps_direct_cases_and_unknown_edits_broad():
+    import yaml
+
+    policy = yaml.safe_load((planner.ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((planner.ROOT / planner.CATALOG).read_text())
+    path = "tests/distributed/attention_precision_reference.py"
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "logging_only_paths": [],
+        "semantic_symbols": {path: ["attention_vjp_reference"]},
+    }
+    required = planner.requirements_for(scope, {}, catalog, policy)
+    assert set(required["mandatory"]) == {
+        "compute-precision-contracts",
+        "wan-sft-cp",
+        "wan-sft-tp-cp",
+    }
+    for symbol in ("<module>", "fast_f32_gemm_budget", "new_helper"):
+        scope["semantic_symbols"][path] = ["attention_vjp_reference", symbol]
+        broad = planner.requirements_for(scope, {}, catalog, policy)
+        assert "flux3-guard-ordered-full" in broad["mandatory"]
+    scope["semantic_symbols"][path] = ["attention_vjp_reference"]
+    entry = next(row for row in policy["focused_owners"] if row.get("test_cases"))
+    entry["test_cases"] = ["missing-case"]
+    with pytest.raises(ValueError, match="Unknown reviewed test consumers"):
+        planner.requirements_for(scope, {}, catalog, policy)
+
+
+def test_attention_reference_consumer_boundary_matches_reviewed_route():
+    """New imports/callers invalidate the reviewed narrow consumer map."""
+    import ast
+
+    expected = {
+        "tests/distributed/test_context_parallel_training.py": {"_native_fp32_attention_reference"},
+        "tests/distributed/test_attention_precision_reference.py": {
+            "test_reference_matches_fp64_autograd_and_encloses_fp32_derivatives",
+            "test_budget_is_independent_of_observed_derivatives_and_rejects_local_corruption",
+            "test_reference_refuses_inputs_outside_its_arithmetic_contract",
+        },
+    }
+    found, trees = {}, {}
+    for file in (planner.ROOT / "tests").rglob("*.py"):
+        path = file.relative_to(planner.ROOT).as_posix()
+        tree = trees[path] = ast.parse(file.read_text())
+        aliases = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "attention_precision_reference":
+                assert all(alias.name != "*" for alias in node.names)
+                aliases.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == "attention_vjp_reference"
+                )
+            if isinstance(node, ast.Import):
+                assert all(alias.name != "attention_precision_reference" for alias in node.names)
+        if aliases:
+            found[path] = {
+                function.name
+                for function in tree.body
+                if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and any(
+                    isinstance(node, ast.Name) and node.id in aliases for node in ast.walk(function)
+                )
+            }
+    assert found == expected
+    training_path = "tests/distributed/test_context_parallel_training.py"
+    functions = {
+        node.name: node for node in trees[training_path].body if isinstance(node, ast.FunctionDef)
+    }
+    affected = set(expected[training_path])
+    while True:
+        expanded = affected | {
+            name
+            for name, node in functions.items()
+            if any(isinstance(item, ast.Name) and item.id in affected for item in ast.walk(node))
+        }
+        if expanded == affected:
+            break
+        affected = expanded
+    assert {name for name in affected if name.startswith("test_")} == {
+        "test_cuda_wan_sft_cp_equivalence",
+        "test_cuda_wan_sft_tp_cp_equivalence",
+    }
+    for path, tree in trees.items():
+        if path == training_path:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "test_context_parallel_training":
+                assert not ({alias.name for alias in node.names} & (affected | {"*"})), path
+            if isinstance(node, ast.Import):
+                assert all(
+                    alias.name != "test_context_parallel_training" for alias in node.names
+                ), path

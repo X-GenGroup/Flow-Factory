@@ -338,20 +338,45 @@ def classify_snapshot(snapshot: dict, rules: dict) -> tuple[dict, dict]:
 def requirements_for(scope: dict, symbols: dict, catalog: dict, policy: dict) -> dict:
     """Use identical owner and catalog rules for executable plans and historical analysis."""
     policy = copy.deepcopy(policy)
+    # Reviewed leaf-helper consumers complement symbol-partitioned source owners.
+    # An incomplete partition (including module state) never narrows artifacts.
+    consumers = {}
+    for path, names in scope.get("semantic_symbols", {}).items():
+        focused = [
+            rule
+            for rule in policy.get("focused_owners", [])
+            if rule.get("test_cases") and matches(path, rule["paths"])
+        ]
+        if names and all(
+            any(fnmatch.fnmatch(name, pattern) for rule in focused for pattern in rule["symbols"])
+            for name in names
+        ):
+            consumers[path] = {name for rule in focused for name in rule["test_cases"]}
+            known = {case["id"] for case in catalog["cases"]}
+            if not consumers[path] <= known:
+                raise ValueError(
+                    f"Unknown reviewed test consumers for {path}: {consumers[path] - known}"
+                )
+            if not path.startswith("tests/") or any(
+                path not in case["artifacts"]
+                for case in catalog["cases"]
+                if case["id"] in consumers[path]
+            ):
+                raise ValueError(f"Reviewed consumers must bind their test helper artifact: {path}")
+
+    def affected(case, path):
+        if path in consumers:
+            return case["id"] in consumers[path]
+        return "semantic_symbols" not in scope or validation_changes.test_case_affected(
+            case,
+            path,
+            scope["semantic_symbols"].get(path, symbols.get(path, [])),
+            scope.get("test_dependencies", {}).get(path),
+        )
+
     for case in catalog["cases"]:
         test_paths = [
-            path
-            for path in case["artifacts"]
-            if path.startswith("tests/")
-            and (
-                "semantic_symbols" not in scope
-                or validation_changes.test_case_affected(
-                    case,
-                    path,
-                    scope["semantic_symbols"].get(path, symbols.get(path, [])),
-                    scope.get("test_dependencies", {}).get(path),
-                )
-            )
+            path for path in case["artifacts"] if path.startswith("tests/") and affected(case, path)
         ]
         if test_paths:
             policy["owners"].append(
@@ -378,16 +403,7 @@ def requirements_for(scope: dict, symbols: dict, catalog: dict, policy: dict) ->
         and path not in set(scope["docs_only_paths"]) | set(scope["logging_only_paths"])
     }
     for case in catalog["cases"]:
-        if any(
-            "semantic_symbols" not in scope
-            or validation_changes.test_case_affected(
-                case,
-                path,
-                scope["semantic_symbols"].get(path, symbols.get(path, [])),
-                scope.get("test_dependencies", {}).get(path),
-            )
-            for path in changed_tests & set(case["artifacts"])
-        ):
+        if any(affected(case, path) for path in changed_tests & set(case["artifacts"])):
             requirements["mandatory"].setdefault(case["id"], []).append(
                 "Execute the changed test artifact itself."
             )

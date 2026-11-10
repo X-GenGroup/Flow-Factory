@@ -14,8 +14,8 @@
 
 """Forward-only error budgets for the qualified native FP32 attention VJP.
 
-This is a fixture-specific reference for Torch 2.10 Sm80+ efficient attention,
-without masks, dropout or GQA, at BF16 external boundaries. It models CUTLASS
+This is a fixture-specific reference for native Sm80+ efficient attention,
+without masks, dropout or GQA, at supported FP32 operation boundaries. It models CUTLASS
 FastF32's three TF32 products and order-dependent FP32 partial reductions. No
 observed derivative enters a reference or budget. Other kernels need their own
 arithmetic contract; this helper is not a general SDPA tolerance.
@@ -88,8 +88,12 @@ def attention_vjp_reference(
     for value in values:
         assert value.dtype == torch.float32 and value.ndim == 4
         assert bool(torch.isfinite(value).all())
-        assert torch.equal(value, value.bfloat16().float())
         assert bool(((value == 0) | (value.abs() >= _TINY)).all())
+    # Native CUDA RMSNorm can produce genuine FP32 Q/K. Determine conversion
+    # exactness from forward operands, never from observed derivative residuals.
+    q_exact, k_exact, v_exact, upstream_exact = [
+        torch.equal(value, value.bfloat16().float()) for value in values
+    ]
     q, k, v, upstream = [value.double().cpu() for value in values]
     assert row["output"].dtype == torch.float32
     actual_output = row["output"].double().cpu()
@@ -123,7 +127,7 @@ def attention_vjp_reference(
     }
 
     product_error = fast_f32_gemm_budget(
-        q.abs(), k.abs().transpose(-1, -2), exact_left=True, exact_right=True
+        q.abs(), k.abs().transpose(-1, -2), exact_left=q_exact, exact_right=k_exact
     )
     score_error = (
         abs(scale32) * product_error
@@ -147,7 +151,7 @@ def attention_vjp_reference(
     )
     assert bool((probability - probability_error > _TINY).all())
     attention_gradient_error = fast_f32_gemm_budget(
-        upstream.abs(), v.abs().transpose(-1, -2), exact_left=True, exact_right=True
+        upstream.abs(), v.abs().transpose(-1, -2), exact_left=upstream_exact, exact_right=v_exact
     )
     delta_error = (
         (upstream * (actual_output - output)).sum(-1, keepdim=True).abs()
@@ -175,14 +179,16 @@ def attention_vjp_reference(
     )
     budgets = {
         "dq": scaled_error @ k.abs()
-        + fast_f32_gemm_budget(scaled.abs() + scaled_error, k.abs(), exact_right=True),
+        + fast_f32_gemm_budget(scaled.abs() + scaled_error, k.abs(), exact_right=k_exact),
         "dk": scaled_error.transpose(-1, -2) @ q.abs()
         + fast_f32_gemm_budget(
-            (scaled.abs() + scaled_error).transpose(-1, -2), q.abs(), exact_right=True
+            (scaled.abs() + scaled_error).transpose(-1, -2), q.abs(), exact_right=q_exact
         ),
         "dv": probability_error.transpose(-1, -2) @ upstream.abs()
         + fast_f32_gemm_budget(
-            (probability + probability_error).transpose(-1, -2), upstream.abs(), exact_right=True
+            (probability + probability_error).transpose(-1, -2),
+            upstream.abs(),
+            exact_right=upstream_exact,
         ),
     }
 

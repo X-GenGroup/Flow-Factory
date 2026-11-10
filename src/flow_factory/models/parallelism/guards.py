@@ -35,6 +35,7 @@ from torch.distributed.tensor.parallel import (
     PrepareModuleOutput,
 )
 
+from .autocast import _native_norm_output_dtype
 from .collectives import _passed_region_entry
 from .plan import ComposedParallelStyle
 from .sequence import SequenceBroadcastOutput, _RegionEntry
@@ -478,7 +479,7 @@ def _install_norm_pair(attention: nn.Module, key_projection: nn.Module, group) -
         key_total = summed[split:].reshape(key_square_sum.shape).to(key_square_sum.dtype)
         pair.result = (key, key._version, key_total, key_work)
         return _across_head_normalize(query_work, query_total, q_size, q_epsilon, self.weight).to(
-            hidden_states.dtype
+            _native_norm_output_dtype(hidden_states)
         )
 
     def paired_key(self: nn.RMSNorm, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -486,7 +487,7 @@ def _install_norm_pair(attention: nn.Module, key_projection: nn.Module, group) -
         if result is not None and _same_key(result[0], result[1], hidden_states):
             pair.result = None
             return _across_head_normalize(result[3], result[2], k_size, k_epsilon, self.weight).to(
-                hidden_states.dtype
+                _native_norm_output_dtype(hidden_states)
             )
         return unfused_k(hidden_states)
 

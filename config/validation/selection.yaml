@@ -9,6 +9,11 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/parallelism/autocast.py]
+    requires: [precision.cp_autocast.cpu, precision.cp_autocast.cuda, precision.norm_autocast,
+               parallel.norm_precision, checkpoint.cp_state.tp1, model.flux.sequence_lifecycle,
+               parallel.flux_tp_cp.dppo_lora, model.ltx2.cp_ltx23_lifecycle]
+    reason: Native autocast compatibility requires same-version operator derivatives, paired TP norm parity and prepared Wan/Flux/LTX consumers, including rollout, overlap and resume.
   - paths: [src/flow_factory/utils/torch_runtime.py]
     requires: [torch.runtime.policy, torch.attention.gradients]
     reason: Worker-wide Torch compatibility must preserve device/version boundaries and native attention derivatives.
@@ -1307,6 +1312,28 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths: [tests/distributed/attention_precision_reference.py]
+    symbols: [attention_vjp_reference]
+    requires: [precision.compute, precision.wan_sft, parallel.cp_sft]
+    test_cases: [compute-precision-contracts, wan-sft-cp, wan-sft-tp-cp]
+    reason: The VJP reference is called only by its CPU controls and Wan SFT attention endpoint checks. Other fixtures import unrelated comparison helpers from the Wan test module; the consumer-boundary regression detects new callers. Any other helper or module change retains all artifact consumers.
+  - paths: [src/flow_factory/models/parallelism/tensor.py]
+    symbols: [ShardedAcrossHeadRMSNorm._apply, <parallel_imports>]
+    requires: [parallel.import_contracts, parallel.norm_precision, precision.norm_autocast,
+               model.ltx2.cp_ltx23_lifecycle, precision.wan_sft]
+    reason: Across-head RMSNorm changes need cancellation and CUDA native output/input/weight derivative controls plus Wan/LTX prepared consumers. Other placement styles and module globals retain broad TP/SP coverage.
+  - paths: [src/flow_factory/models/parallelism/guards.py]
+    symbols: [_install_norm_pair, <parallel_imports>]
+    requires: [parallel.import_contracts, parallel.norm_precision, precision.norm_autocast,
+               model.ltx2.cp_ltx23_lifecycle, precision.wan_sft]
+    reason: Paired norms retain collective-count, cleanup, cancellation and native CUDA derivative controls. Other guards and module globals retain broad coverage.
+  - paths: [src/flow_factory/trainers/common/model_preparation.py]
+    symbols: [ModelPreparation._apply_context_parallel, <parallel_imports>]
+    requires: [parallel.cp_runtime_contracts, geometry.cp_transport.tp1, geometry.cp_transport.tp2,
+               parallel.native_ring_attention, parallel.tp_cp_sft, checkpoint.cp_state.tp1,
+               model.flux.sequence_lifecycle, parallel.flux_tp_cp.dppo_lora,
+               precision.cp_autocast.cpu, precision.cp_autocast.cuda]
+    reason: CP-only preparation covers physical frozen/variant roots, real transport peers, native Ring and Ulysses backward, TP/SP ordering and state/rollout continuation. Other preparation methods retain all backend obligations.
   - paths:
     - src/flow_factory/models/wan/_context_parallel.py
     symbols:

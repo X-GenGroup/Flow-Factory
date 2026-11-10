@@ -202,7 +202,7 @@ def _pairing_worker(rank: int, store_path: str, result_dir: str, options: Dict[s
     try:
         from torch.distributed.device_mesh import init_device_mesh
 
-        from flow_factory.models import tensor_parallel
+        from flow_factory.models.parallelism import runtime as tensor_parallel
         from flow_factory.models.tensor_parallel import apply_tensor_parallel
 
         mesh = init_device_mesh("cpu", (WORLD_SIZE,), mesh_dim_names=("tp",))
@@ -215,6 +215,7 @@ def _pairing_worker(rank: int, store_path: str, result_dir: str, options: Dict[s
             expected, _ = _run(copy.deepcopy(reference), count=count)
             sharded = copy.deepcopy(reference)
             apply_tensor_parallel(sharded, mesh, _plan())
+            assert (getattr(sharded.self_attn, "_ff_norm_pair", None) is not None) == paired
             received, counts = _run(sharded, count=count)
             return {"worst": _worst(expected, received), "counts": counts, "held": _held(sharded)}
 
@@ -273,7 +274,7 @@ def _wan_worker(rank: int, store_path: str, result_dir: str, options: Dict[str, 
         from torch.distributed.device_mesh import init_device_mesh
         from torch.distributed.tensor.debug import CommDebugMode
 
-        from flow_factory.models import tensor_parallel
+        from flow_factory.models.parallelism import runtime as tensor_parallel
         from flow_factory.models.tensor_parallel import apply_tensor_parallel, resolve_parallel_plan
         from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
 
@@ -285,6 +286,9 @@ def _wan_worker(rank: int, store_path: str, result_dir: str, options: Dict[str, 
             apply_tensor_parallel(
                 model, mesh, resolve_parallel_plan(Wan2_T2V_Adapter, sequence_parallel=False)
             )
+            assert sum(
+                getattr(module, "_ff_norm_pair", None) is not None for module in model.modules()
+            ) == (4 if paired else 0)
             generator = torch.Generator().manual_seed(11)
             latents = torch.randn(1, 4, 2, 4, 4, generator=generator).double()
             text = torch.randn(1, 5, 16, generator=generator).double()
