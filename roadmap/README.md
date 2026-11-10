@@ -130,6 +130,7 @@ not assignments or a second status board.
 | Merged baseline | Build on main `7c65c6e9`, including model stack #323 through #324 | Preserve each original runtime source and its evidence; no repeated implementation |
 | Algorithm checkpoint | P11 is complete through CRD #316, DiffusionOPD #317, TDM #319 and TDM-R1 #320 | The [14-entry checkpoint](handoffs/v0.5-algorithm-closure.md) records original owner/evidence coverage; DMD2 #304 stays separate |
 | Active model stack | [P12e](milestones/v0.5.md#p12e) reference-input fixture prerequisite, [P12f](milestones/v0.5.md#p12f) Qwen TP/SP+CP, [P12g](milestones/v0.5.md#p12g) Kontext, [P12h](milestones/v0.5.md#p12h) Qwen editing | Reuse native Diffusers; retain checkpoint identity and selected shared-consumer proofs; user merges |
+| Target loading | [P12j](milestones/v0.5.md#p12j): probe meta bundle → Accelerate FSDP2 prepare → per-module materialization, bitwise against replicated loading | Stacked on #356; builds on #357's TP style surface; the probe PR changes no runtime behavior |
 | Remaining closure | Follow the [owner inventory](milestones/v0.5.md#closure-inventory) | Shared mechanisms support deliberate cross-model/algorithm witnesses, not automatic admission |
 | Stack delivery | Continue from the reviewed dependency head and use native GitHub stack membership | Freeze, review and qualify each coherent layer before dependent delivery; user merges |
 

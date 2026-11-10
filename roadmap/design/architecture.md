@@ -26,6 +26,7 @@ tests; unavailable tooling must be reported honestly rather than called a passin
 | TP/SP | Training-aware plans, LoRA/freeze semantics, boundary layouts and gradient obligations | PyTorch parallelization primitives |
 | CP | Mapping the training mesh into a model plan, sample/RNG identity, loss scaling and lifecycle | Ordinary Diffusers Ulysses/Ring mechanisms where their backward and layout contracts are verified |
 | Model state | Component/variant identity, snapshot versions, writers, update cadence and persistence | PEFT adapters and backend-aware tensor/state storage |
+| Target loading | Materializing FSDP2 target roots in their prepared local layout, source mapping and fail-fast layout checks ([P12j](../milestones/v0.5.md#p12j)) | Diffusers construction and checkpoints, safetensors, Accelerate FSDP2 preparation on the meta bundle |
 | Algorithms | Objective, acquisition/feedback requirements, role-update semantics | Shared acquisition, feedback and optimization mechanisms |
 | Rewards | Identity, batching, readiness, error propagation, ownership and cleanup | Reward implementations and remote services through existing interfaces |
 | EP | Model router semantics, expert identity/placement, dense/expert optimizer and checkpoint ownership | NCCL all-to-all first; DeepEP as an optional transport |
