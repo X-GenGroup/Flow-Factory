@@ -11,7 +11,9 @@ static_paths:
 owners:
   - paths: [MANIFEST.in, docker/docker-cuda/Dockerfile,
             scripts/validate_release_artifacts.py, scripts/check_installed_release.py,
-            tests/scripts/test_release_artifacts.py, .github/workflows/release-artifacts.yml]
+            tests/scripts/test_release_artifacts.py, .github/workflows/release-artifacts.yml,
+            scripts/check_release_identity.py, tests/scripts/test_release_identity.py,
+            .github/workflows/release.yml, .github/workflows/container.yml]
     requires: [release.artifacts]
     reason: Packaging payload and installed-artifact boundaries require release checker controls; no training runtime owner changes are implied.
   - paths: [src/flow_factory/models/stable_diffusion/_sequence_parallel.py,

@@ -4328,6 +4328,9 @@ def test_yaml_documentation_proof_preserves_real_configuration_owner_routing(pat
         "docker/docker-cuda/Dockerfile",
         "scripts/validate_release_artifacts.py",
         "scripts/check_installed_release.py",
+        "scripts/check_release_identity.py",
+        ".github/workflows/release.yml",
+        ".github/workflows/container.yml",
     ],
 )
 def test_packaging_owners_select_artifact_controls_without_gpu_sweep(path):
