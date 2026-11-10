@@ -236,6 +236,7 @@ def _verify_baseline(
     *,
     repository: str,
     baseline_bundle: Path | None = None,
+    baseline_cache: dict | None = None,
 ) -> tuple[dict, dict]:
     """Verify one original source and bundle without combining or relabeling its results."""
     require(isinstance(baseline, dict) and set(baseline) == _BASELINE, "Invalid baseline fields")
@@ -261,6 +262,12 @@ def _verify_baseline(
         reviewed_delta == delta(root, baseline["tested_commit"], plan["tested_commit"]),
         "Reviewed source delta differs",
     )
+    # Only a single merge verification shares this cache. Source trees, bundle identity
+    # and consumer code are immutable within that call; target deltas are still checked
+    # above on every use. Local override files are never cached.
+    cache_key = (str(root.resolve()), repository, transport._canonical_bytes(baseline))
+    if baseline_bundle is None and baseline_cache is not None and cache_key in baseline_cache:
+        return baseline_cache[cache_key]
     previous = planner.generate(root, baseline["base_commit"], baseline["tested_commit"], [], [])
     require(
         validator.plan_sha256(previous) == baseline["plan_sha256"],
@@ -302,6 +309,9 @@ def _verify_baseline(
     )
     # import_bundle verifies every assertion file before materializing its unchanged bytes.
     transport.import_bundle(root, previous, json.loads(raw))
+    if baseline_bundle is None and baseline_cache is not None:
+        require(len(baseline_cache) < 128, "Too many cached merge baselines")
+        baseline_cache[cache_key] = (previous, historical)
     return previous, historical
 
 
@@ -313,6 +323,7 @@ def verify(
     repository: str,
     baseline_bundle: Path | None = None,
     supplemental_bundles: list[Path] | None = None,
+    baseline_cache: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """Validate review/source/baseline; recording this does not assert current tests passed."""
     require(
@@ -382,6 +393,7 @@ def verify(
             item["delta"],
             repository=repository,
             baseline_bundle=local_bundle,
+            baseline_cache=baseline_cache,
         )
         require(previous["tested_commit"] not in heads, "Duplicate historical source")
         heads.add(previous["tested_commit"])
@@ -441,6 +453,7 @@ def decide(
     repository: str,
     baseline_bundle: Path | None = None,
     supplemental_bundles: list[Path] | None = None,
+    baseline_cache: dict | None = None,
 ) -> dict:
     sources, case_sources = verify(
         root,
@@ -449,6 +462,7 @@ def decide(
         repository=repository,
         baseline_bundle=baseline_bundle,
         supplemental_bundles=supplemental_bundles,
+        baseline_cache=baseline_cache,
     )
     require(
         summary["tested_commit"] == plan["tested_commit"]

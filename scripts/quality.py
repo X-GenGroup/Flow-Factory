@@ -342,6 +342,7 @@ def main() -> int:
                 "tests/scripts/test_validation_planner.py",
                 "tests/scripts/test_validation_changes.py",
                 "tests/scripts/test_validation_acceptance.py",
+                "tests/scripts/test_validation_merge.py",
                 "tests/scripts/test_validation_catalog.py",
                 "tests/scripts/test_validate_gpu_campaign.py",
             ]

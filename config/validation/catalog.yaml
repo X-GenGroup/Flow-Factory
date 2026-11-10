@@ -35,6 +35,7 @@ cases:
   - scripts/agent_scope.py
   - scripts/validate_validation_plan.py
   - scripts/validation_acceptance.py
+  - scripts/validation_merge.py
   - requirements/quality.txt
   - tests/docs/test_agent_harness.py
   - tests/docs/test_docstring_hygiene.py
@@ -48,6 +49,7 @@ cases:
   - tests/scripts/test_validation_changes.py
   - scripts/validation_changes.py
   - tests/scripts/test_validation_acceptance.py
+  - tests/scripts/test_validation_merge.py
   - tests/scripts/test_validate_gpu_campaign.py
   cost_seconds: 45
   resources:

@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   actions: read
+  pull-requests: read
 
 concurrency:
   group: quality-${{ github.event.pull_request.number || github.ref }}
@@ -62,7 +63,8 @@ jobs:
     # Keep this required-check name stable. It now gates all selected evidence.
     name: ${{ github.event_name == 'workflow_dispatch' && 'evidence-only-cpu' || 'cpu-contracts' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # A batched main push can revalidate several original PR reports.
+    timeout-minutes: 30
     env:
       BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
       HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -109,6 +111,8 @@ jobs:
       - name: Report qualification and any explicit incremental acceptance
         env:
           GH_TOKEN: ${{ github.token }}
+          VALIDATION_EVENT: ${{ github.event_name }}
+          VALIDATION_REF: ${{ github.ref }}
         run: |
           evidence_args=()
           if test -f .scratch/validation/bundle.json; then
@@ -116,6 +120,9 @@ jobs:
           fi
           if test -f .scratch/validation/acceptance.json; then
             evidence_args+=(--acceptance .scratch/validation/acceptance.json --repository "$GITHUB_REPOSITORY")
+          fi
+          if [[ "$VALIDATION_EVENT" == push && "$VALIDATION_REF" == refs/heads/main ]]; then
+            evidence_args+=(--merged-repository "$GITHUB_REPOSITORY")
           fi
           python3 scripts/quality.py validation report \
             --plan .scratch/validation/plan.json \
