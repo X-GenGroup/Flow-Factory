@@ -100,7 +100,7 @@ went from 77.28 to 15.54 GiB reserved and completed the bounded native AV LoRA s
 28.33 GiB peak. Each rank had 28 local attention heads, 51 modulation placements and
 416 finite gradient tensors, 208 of them nonzero. DP shards 0-1 updated 416 tensors and
 shards 2-3 updated 208. The release does not lower the 77.26 GiB initialization peak,
-which leaves under 2 GiB of headroom on 79.19 GiB devices. DP2×TP2 remains unsupported.
+which leaves under 2 GiB of headroom on 79.19 GiB devices. This replicated-loading DP2×TP2 attempt does not fit; the sharded-loading results below supersede that capacity limit.
 Run this placement with `FF_H3_CAPACITY_DP=4 FF_H3_CAPACITY_TP=2`.
 
 With `parallelism.target_materialization` unset or `sharded` (H3 resolves an unset value to
