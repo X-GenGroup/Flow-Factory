@@ -15057,3 +15057,52 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: target-materialization-gloo
+  covers:
+  - preparation.target_materialization
+  facets:
+  - model_runtime
+  - distributed
+  owners:
+  - src/flow_factory/loading/materialization.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_target_materialization.py
+  fixture: Plain DP2xTP2 network with uneven rows, frozen block, tied modules and buffers; tiny native
+    SD3.5, Z-Image and MiniMax H3 with default LoRA under their adapter TP plans and per-block FSDP2.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Meta-first TP/FSDP2 preparation plus materialization reproduces every rank's replicated
+      local shards, placements, trainability, buffers, tied parameters and forward output bitwise, keeps
+      optimizer parameter identities, supports a rank-0-only source, and rejects missing, unconsumed,
+      resident or valueless sources.
+    reward: none
+  artifacts:
+  - tests/distributed/test_target_materialization.py
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/h3_cp_fixture.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - diffusers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
