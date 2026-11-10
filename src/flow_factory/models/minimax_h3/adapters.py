@@ -193,8 +193,10 @@ class _MiniMaxH3WorkflowAdapter:
         The model-owned CP bridge places native cuts before these SP boundaries.
         Text refinement independently pads and masks its own token stream, then
         gathers and removes padding before the root packs text/video/audio rows.
+        Without CP, the packed rows are padded to ``tp_size`` and padded keys are
+        masked, so any prompt length composes with SP; CP replaces that padding.
         """
-        from ._sequence_parallel import H3RefinerSequenceParallel
+        from ._sequence_parallel import H3PackedSequencePadding, H3RefinerSequenceParallel
 
         # `MiniMaxH3TransformerBlock.forward` is called positionally with
         # `(hidden_states, temb, adaln_indices, rotary_emb)` and
@@ -209,7 +211,7 @@ class _MiniMaxH3WorkflowAdapter:
         )
         refiner = "token_refiner.refiner_blocks.*"
         return {
-            "": H3RefinerSequenceParallel(),
+            "": ComposedParallelStyle(H3RefinerSequenceParallel(), H3PackedSequencePadding()),
             f"{refiner}.norm1": SequenceBroadcastParameter(),
             f"{refiner}.norm2": SequenceBroadcastParameter(),
             f"{refiner}.attn": PrepareModuleInput(

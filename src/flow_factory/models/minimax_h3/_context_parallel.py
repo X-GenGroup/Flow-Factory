@@ -236,7 +236,11 @@ class _H3InputPadding(ModelHook):
 
 def configure_h3_context_parallel(module: nn.Module) -> None:
     """Pad rotary output before native CP slicing, without altering coordinates."""
+    from ._sequence_parallel import remove_h3_sequence_padding
+
     _validate_native_processors(module)
+    # CP pads the same rows to cp_size * tp_size; SP-only padding would apply twice.
+    remove_h3_sequence_padding(module)
     HookRegistry.check_if_exists_or_initialize(module.rope).register_hook(
         _H3RotaryPadding(module), "ff_h3_rotary_padding"
     )
@@ -244,9 +248,12 @@ def configure_h3_context_parallel(module: nn.Module) -> None:
 
 def install_h3_context_parallel(module: nn.Module, config: Any) -> None:
     """Keep native CP/autograd and mask padded rows after the text refiner."""
+    from ._sequence_parallel import remove_h3_sequence_padding
+
     if hasattr(module, "_ff_h3_cp_boundaries"):
         raise ValueError("MiniMax H3 CP hooks must be installed exactly once")
     _validate_native_processors(module)
+    remove_h3_sequence_padding(module)
     tp_size = module.config.num_attention_heads // module.transformer_blocks[0].attn.heads
     module._ff_h3_cp_divisor = config.ring_degree * config.ulysses_degree * tp_size
     module.enable_parallelism(config=config)

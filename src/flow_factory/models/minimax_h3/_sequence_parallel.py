@@ -14,6 +14,8 @@
 
 """H3 text-refiner token padding, checkpoint arguments and native packing boundary."""
 
+from inspect import signature
+
 import torch
 from diffusers.models.transformers.transformer_minimax_h3 import (
     MiniMaxH3TokenRefiner,
@@ -23,6 +25,14 @@ from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor import DTensor, Replicate, Shard
 from torch.distributed.tensor.parallel import ParallelStyle
+
+from ..parallelism.sequence import SequencePadding
+from ._context_parallel import (
+    _argument,
+    _pad_rows,
+    _replace_argument,
+    validate_h3_context_parallel_inputs,
+)
 
 
 class H3SequenceParallelTokenRefinerBlock(MiniMaxH3TokenRefinerBlock):
@@ -106,3 +116,91 @@ class H3RefinerSequenceParallel(ParallelStyle):
                 ],
             )
         return module
+
+
+class H3PackedSequencePadding(SequencePadding):
+    """Pad the packed text/video/audio rows to the TP degree for SP without CP.
+
+    The packed length follows the prompt, so SP alone would require it to divide
+    ``tp_size``. These hooks append rows at the end of the packed sequence: zero
+    hidden rows, identity rotary rows and modulation index 0. Every attention masks
+    the padded keys, and the root's own ``index_select`` drops the padded output
+    rows, so valid rows and every gradient match the unpadded model. CP installs its
+    own padding to ``cp_size * tp_size`` and removes these hooks first.
+    """
+
+    def install(self, module: nn.Module, device_mesh: DeviceMesh) -> None:
+        if hasattr(module, "_ff_h3_sp_padding_handles"):
+            raise ValueError("MiniMax H3 SP padding must be installed exactly once")
+        divisor = device_mesh.size()
+        call_signature = signature(module.forward)
+
+        def validate(target, args, kwargs):
+            validate_h3_context_parallel_inputs(
+                call_signature.bind(*args, **kwargs).arguments, divisor
+            )
+
+        def pad_rotary(rope, inputs, output):
+            cos, sin = output
+            return _pad_rows(cos, divisor, 0, 1), _pad_rows(sin, divisor, 0)
+
+        def pad_output_norm(norm, args, kwargs):
+            original = _argument(args, kwargs, "timestep_indices", 2)
+            return _replace_argument(
+                args, kwargs, "timestep_indices", 2, _pad_rows(original, divisor, 0)
+            )
+
+        handles = [
+            module.register_forward_pre_hook(validate, with_kwargs=True, prepend=True),
+            module.rope.register_forward_hook(pad_rotary),
+            module.norm_out.register_forward_pre_hook(
+                pad_output_norm, with_kwargs=True, prepend=True
+            ),
+        ]
+        masks = []
+        for index, block in enumerate(module.transformer_blocks):
+
+            def pad_rows(target, args, kwargs, first=index == 0):
+                # Runs inside checkpoint replay as well, so the recorded row count
+                # always belongs to the forward being (re)computed.
+                original = _argument(args, kwargs, "adaln_indices", 2)
+                target._ff_h3_valid_rows = original.shape[0]
+                args, kwargs = _replace_argument(
+                    args, kwargs, "adaln_indices", 2, _pad_rows(original, divisor, 0)
+                )
+                if first:
+                    hidden = _argument(args, kwargs, "hidden_states", 0)
+                    args, kwargs = _replace_argument(
+                        args, kwargs, "hidden_states", 0, _pad_rows(hidden, divisor, 1)
+                    )
+                return args, kwargs
+
+            def key_mask(attention, args, kwargs, block=block):
+                # Registered after the SP input gather, so the rows are complete.
+                hidden = _argument(args, kwargs, "hidden_states", 0)
+                rows, valid = hidden.shape[1], block._ff_h3_valid_rows
+                if rows == valid:
+                    return None
+                native_mask = args[2] if len(args) > 2 else kwargs.get("attention_mask")
+                if native_mask is not None:
+                    raise ValueError("MiniMax H3 SP padding owns the native padding key mask")
+                mask = (torch.arange(rows, device=hidden.device) < valid)[None, None, None, :]
+                if len(args) > 2:
+                    return (*args[:2], mask, *args[3:]), kwargs
+                return args, {**kwargs, "attention_mask": mask}
+
+            handles.append(
+                block.register_forward_pre_hook(pad_rows, with_kwargs=True, prepend=True)
+            )
+            masks.append(block.attn.register_forward_pre_hook(key_mask, with_kwargs=True))
+        module._ff_h3_sp_padding_mask_handles = tuple(masks)
+        module._ff_h3_sp_padding_handles = (*handles, *masks)
+
+
+def remove_h3_sequence_padding(module: nn.Module) -> None:
+    """Remove SP-only packed padding so CP can install its own, larger divisor."""
+    for handle in getattr(module, "_ff_h3_sp_padding_handles", ()):
+        handle.remove()
+    for name in ("_ff_h3_sp_padding_handles", "_ff_h3_sp_padding_mask_handles"):
+        if hasattr(module, name):
+            delattr(module, name)

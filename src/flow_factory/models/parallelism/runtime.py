@@ -28,12 +28,14 @@ from torch.distributed.tensor.parallel import ParallelStyle, parallelize_module
 from .guards import (
     _guard_sequence_divisibility,
     _install_region_input_checks,
+    _leaf_styles,
     _pair_across_head_norms,
     _require_region_entries,
     _scatter_entries,
     _settle_collective_outputs,
 )
 from .plan import build_total_plan
+from .sequence import SequencePadding
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +135,25 @@ def localize_attention_head_counts(root: nn.Module, tp_size: int) -> int:
     return adjusted
 
 
+def _install_sequence_padding(
+    root: nn.Module, plan: Mapping[str, ParallelStyle], tp_mesh: DeviceMesh
+) -> int:
+    """Install every :class:`SequencePadding` after the scatters and guards it precedes."""
+    installed = 0
+    for path, style in plan.items():
+        for leaf in _leaf_styles(style):
+            if not isinstance(leaf, SequencePadding):
+                continue
+            if "*" in path:
+                raise ValueError(
+                    f"{type(leaf).__name__} pads one module's streams and needs a concrete plan "
+                    f"path, received {path!r}"
+                )
+            leaf.install(root.get_submodule(path), tp_mesh)
+            installed += 1
+    return installed
+
+
 def apply_tensor_parallel(
     root: nn.Module,
     tp_mesh: DeviceMesh,
@@ -181,6 +202,7 @@ def apply_tensor_parallel(
 
     adjusted = localize_attention_head_counts(root, tp_mesh.size())
     guarded = _guard_sequence_divisibility(root, scatters, tp_mesh.size())
+    padded = _install_sequence_padding(root, total, tp_mesh)
     settled = _settle_collective_outputs(root, total)
     _install_region_input_checks(root, total)
     _pair_across_head_norms(root, total, tp_mesh)
@@ -213,12 +235,13 @@ def apply_tensor_parallel(
     logger.info(
         "Applied tensor parallelism over %d ranks: %d plan entries, %d attention "
         "modules localized, %d parameter(s) refrozen, %d sequence scatter(s) guarded, "
-        "%d collective output(s) settled.",
+        "%d sequence padding owner(s) installed, %d collective output(s) settled.",
         tp_mesh.size(),
         len(total),
         adjusted,
         restored,
         guarded,
+        padded,
         settled,
     )
     return total
