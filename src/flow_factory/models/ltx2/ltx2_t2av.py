@@ -220,6 +220,8 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     log_probs is the joint policy log_prob that drives policy gradient training.
     """
 
+    supports_sharded_target_materialization = True
+
     context_parallel_capability = ContextParallelCapability(
         layout=LTX2ContextParallelLayout.JOINT_AUDIO_VIDEO, tensor_parallel=True
     )

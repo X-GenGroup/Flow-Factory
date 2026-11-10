@@ -81,6 +81,7 @@ class WanT2VSample(T2VSample):
 
 
 class Wan2_T2V_Adapter(BaseAdapter):
+    supports_sharded_target_materialization = True
     compute_precision_policies = (
         ComputePrecisionPolicy(
             name="cross_attention_fp32_v1",

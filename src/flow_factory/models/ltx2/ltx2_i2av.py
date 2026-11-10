@@ -159,6 +159,8 @@ class LTX2_I2AV_Adapter(BaseAdapter):
     ``_output`` helpers or is duplicated.
     """
 
+    supports_sharded_target_materialization = True
+
     context_parallel_capability = ContextParallelCapability(
         layout=LTX2ContextParallelLayout.JOINT_AUDIO_VIDEO, tensor_parallel=True
     )

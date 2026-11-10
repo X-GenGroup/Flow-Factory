@@ -25,7 +25,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pytest
 import torch
@@ -90,7 +90,94 @@ def _plain_case() -> Tuple[nn.Module, Callable[[nn.Module], torch.Tensor], Calla
     return model, forward, tensor_parallel, ["blocks.0", "blocks.1", "blocks.2"]
 
 
-def _fixture(architecture: str) -> Tuple[nn.Module, Callable[[nn.Module], torch.Tensor], type]:
+def _shard_only_fixture(architecture: str) -> Tuple[nn.Module, type]:
+    """Native tiny roots whose inputs need a pipeline; only their shards are compared."""
+    if architecture == "wan_t2v":
+        from test_wan_sequence_parallel_parity import _build, _with_lora
+
+        from flow_factory.models.wan.wan2_t2v import Wan2_T2V_Adapter
+
+        return _with_lora(_build()), Wan2_T2V_Adapter
+    if architecture == "wan_i2v":
+        from wan_i2v_cp_fixture import build_transformer, install_lora
+
+        from flow_factory.models.wan.wan2_i2v import Wan2_I2V_Adapter
+
+        return install_lora(build_transformer()), Wan2_I2V_Adapter
+    if architecture.startswith("wan_"):
+        from wan_remaining_cp_fixture import adapter_class, build_transformer, install_lora
+
+        variant = architecture[len("wan_") :]
+        return install_lora(build_transformer(variant), variant), adapter_class(variant)
+    if architecture.startswith("flux2_"):
+        from flux2_cp_fixture import adapter_class, build_transformer, install_lora
+
+        variant = architecture[len("flux2_") :]
+        return install_lora(build_transformer(variant), variant), adapter_class(variant)
+    if architecture == "flux3_base":
+        from flux3_cp_fixture import build_transformer, install_lora
+
+        from flow_factory.models.flux.flux3 import Flux3Adapter
+
+        return install_lora(build_transformer("base"), "base"), Flux3Adapter
+    if architecture == "flux1_kontext":
+        from test_region_entry_parity import _ARCHITECTURES, _with_lora
+
+        from flow_factory.models.flux.flux1_kontext import Flux1KontextAdapter
+
+        model, _, _ = _ARCHITECTURES["flux1"]()
+        return _with_lora(model, Flux1KontextAdapter), Flux1KontextAdapter
+    if architecture == "qwen_image":
+        from qwen_cp_fixture import adapter_class, build_transformer, install_lora
+
+        return install_lora(build_transformer()), adapter_class()
+    if architecture.startswith("qwen_edit_"):
+        from qwen_edit_cp_fixture import adapter_class, build_transformer, install_lora
+
+        zero_cond_t = architecture == "qwen_edit_2511"
+        return install_lora(build_transformer(zero_cond_t=zero_cond_t)), adapter_class()
+    if architecture.startswith("ltx2"):
+        from ltx2_cp_fixture import adapter_class, build_transformer, install_lora
+
+        ltx23 = architecture == "ltx23_i2av"
+        return install_lora(build_transformer(ltx23=ltx23), ltx23), adapter_class(ltx23)
+    if architecture == "sensenova":
+        from sensenova_cp_fixture import build_denoiser, install_lora
+
+        from flow_factory.models.sensenova.sensenova import SenseNovaAdapter
+
+        return install_lora(build_denoiser()), SenseNovaAdapter
+    if architecture == "bagel_mot":
+        from peft import LoraConfig, get_peft_model
+
+        from flow_factory.models.bagel.bagel import BagelAdapter
+        from flow_factory.models.bagel.modeling.bagel import qwen2_navit as native
+
+        torch.manual_seed(19)
+        module = native.Qwen2ForCausalLM(
+            native.Qwen2Config(
+                vocab_size=32,
+                hidden_size=64,
+                intermediate_size=128,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                num_key_value_heads=2,
+                layer_module="Qwen2MoTDecoderLayer",
+                qk_norm=True,
+                freeze_und=False,
+                pad_token_id=0,
+                tie_word_embeddings=False,
+            )
+        )
+        targets = BagelAdapter.default_target_modules.fget(object.__new__(BagelAdapter))
+        config = LoraConfig(r=2, lora_alpha=2, target_modules=targets, init_lora_weights=False)
+        return get_peft_model(module, config), BagelAdapter
+    raise ValueError(f"unknown materialization fixture {architecture!r}")
+
+
+def _fixture(
+    architecture: str,
+) -> Tuple[nn.Module, Optional[Callable[[nn.Module], torch.Tensor]], type]:
     if architecture == "h3":
         from h3_cp_fixture import adapter_class, build_transformer, install_lora, model_inputs
 
@@ -101,8 +188,22 @@ def _fixture(architecture: str) -> Tuple[nn.Module, Callable[[nn.Module], torch.
         return install_lora(build_transformer()), forward, adapter_class("t2va")
     from test_region_entry_parity import _ARCHITECTURES, _with_lora
 
+    if architecture not in _ARCHITECTURES:
+        model, adapter = _shard_only_fixture(architecture)
+        return model, None, adapter
     model, forward, adapter = _ARCHITECTURES[architecture]()
     return _with_lora(model, adapter), forward, adapter
+
+
+def _sharding_units(native: nn.Module) -> List[str]:
+    """Every item of each outermost ``ModuleList``, as FSDP2 per-block wrapping would see."""
+    units: List[str] = []
+    for name, module in native.named_modules():
+        if isinstance(module, nn.ModuleList) and not any(
+            name == unit or name.startswith(unit + ".") for unit in units
+        ):
+            units.extend(f"{name}.{index}" for index in range(len(module)))
+    return units
 
 
 def _adapter_case(
@@ -114,21 +215,18 @@ def _adapter_case(
         resolve_parallel_plan,
     )
 
-    model, forward, adapter = _fixture(architecture)
+    #: A ``_sp`` suffix selects the adapter's sequence-parallel plan, which can shard more weights.
+    sequence_parallel = architecture.endswith("_sp")
+    model, forward, adapter = _fixture(architecture.removesuffix("_sp"))
     native = peel_peft_wrapper(model)
     prefix = next(name for name, item in model.named_modules() if item is native)
-    units = [
-        f"{prefix}.{list_name}.{index}"
-        for list_name, child in native.named_children()
-        if isinstance(child, nn.ModuleList)
-        for index in range(len(child))
-    ]
+    units = [f"{prefix}.{unit}" for unit in _sharding_units(native)]
 
     def tensor_parallel(module: nn.Module, mesh) -> None:
         apply_tensor_parallel(
             peel_peft_wrapper(module),
             mesh,
-            resolve_parallel_plan(adapter, sequence_parallel=False),
+            resolve_parallel_plan(adapter, sequence_parallel=sequence_parallel),
         )
 
     return model, forward, tensor_parallel, units
@@ -198,7 +296,7 @@ def _materialize_worker(rank: int, store_path: str, result_dir: str, options: Di
             placements=sorted(placements),
             optimizer_identity=before == after,
             buffers_equal=buffers_equal,
-            output_equal=torch.equal(forward(replicated), forward(candidate)),
+            output_equal=forward is None or torch.equal(forward(replicated), forward(candidate)),
             tied=(
                 candidate.blocks[0].tied.weight is candidate.blocks[0].norm.weight
                 if options["case"] == "plain"
@@ -219,6 +317,25 @@ _CASES = [
     ("h3", None),
     ("flux1", None),
     ("qwen_image_21", None),
+    ("wan_t2v", None),
+    ("wan_i2v", None),
+    ("wan_t2v_dual", None),
+    ("wan_t2v_expanded", None),
+    ("wan_i2v_dual", None),
+    ("wan_flf2v", None),
+    ("flux1_kontext", None),
+    ("flux2_dev", None),
+    ("flux2_klein4b", None),
+    ("flux2_klein9b", None),
+    ("flux3_base", None),
+    ("qwen_image", None),
+    ("qwen_edit_2509", None),
+    ("qwen_edit_2511", None),
+    ("ltx20_t2av", None),
+    ("ltx23_i2av", None),
+    ("sensenova", None),
+    ("bagel_mot", None),
+    ("bagel_mot_sp", None),
 ]
 
 
@@ -227,6 +344,15 @@ _CASES = [
 def test_meta_preparation_materializes_the_replicated_local_shards(
     tmp_path: Path, case: str, source_rank
 ) -> None:
+    import importlib.util
+
+    import diffusers
+
+    if case == "flux3_base" and not hasattr(diffusers, "Flux3Transformer2DModel"):
+        pytest.skip("this diffusers has no Flux3Transformer2DModel")
+    if case.startswith("bagel_mot") and importlib.util.find_spec("flash_attn") is None:
+        pytest.skip("Bagel's vendored attention imports flash_attn at module scope")
+
     results = run_gloo_ranks(
         _materialize_worker, tmp_path, WORLD_SIZE, {"case": case, "source_rank": source_rank}
     )
