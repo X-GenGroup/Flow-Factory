@@ -251,6 +251,9 @@ class BaseAdapter(ABC):
     supports_diffusers_cache: ClassVar[bool] = False
     supported_diffusers_cache_policies: ClassVar[Optional[frozenset[str]]] = None
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = False
+    # Opt in only after gloo parity proves that meta-first TP/FSDP2 preparation plus
+    # materialization reproduces this adapter's replicated local shards bitwise.
+    supports_sharded_target_materialization: ClassVar[bool] = False
     context_parallel_capability: ClassVar[Optional[ContextParallelCapability]] = None
     context_parallel_component_names: ClassVar[Tuple[str, ...]] = ("transformer",)
     context_parallel_diffusers_revision: ClassVar[Optional[Tuple[str, str]]] = None

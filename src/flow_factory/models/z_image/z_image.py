@@ -84,6 +84,7 @@ class ZImageSample(T2ISample):
 class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapt Z-Image for online generation and offline image targets."""
 
+    supports_sharded_target_materialization = True
     tensor_parallel_head_config = ("transformer", ("n_heads", "n_kv_heads"))
 
     context_parallel_capability = ContextParallelCapability(

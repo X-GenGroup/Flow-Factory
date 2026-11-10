@@ -32,6 +32,8 @@ MODEL_REPOSITORY = "MiniMaxAI/MiniMax-H3"
 MODEL_REVISION = "42ed227ee7df40d41602854ae760620d6eb651fe"
 DP_SIZE = int(os.environ.get("FF_H3_CAPACITY_DP", "2"))
 TP_SIZE = int(os.environ.get("FF_H3_CAPACITY_TP", "4"))
+TARGET_MATERIALIZATION = os.environ.get("FF_H3_TARGET_MATERIALIZATION", "replicated")
+EFFICIENT_LOADING = os.environ.get("FF_H3_CAPACITY_EFFICIENT_LOADING") == "1"
 WORLD_SIZE = DP_SIZE * TP_SIZE
 
 
@@ -76,6 +78,7 @@ def capacity_config(checkpoint, result_dir):
                 "tp_size": TP_SIZE,
                 "cp_size": 1,
                 "sequence_parallel": True,
+                "target_materialization": TARGET_MATERIALIZATION,
             },
             "model": {
                 "model_type": "minimax-h3-ref2va",
@@ -148,6 +151,8 @@ def worker(rank, store_path, result_dir, options):
     result = {
         "rank": rank,
         "claim": "released_ref2va_tp4_lora_preparation_capacity_and_bounded_native_step",
+        "target_materialization": TARGET_MATERIALIZATION,
+        "cpu_ram_efficient_loading": EFFICIENT_LOADING,
         "dp_rank": rank // TP_SIZE,
         "tp_rank": rank % TP_SIZE,
         "memory": [],
@@ -189,7 +194,7 @@ def worker(rank, store_path, result_dir, options):
                 fsdp_version=2,
                 auto_wrap_policy="TRANSFORMER_BASED_WRAP",
                 transformer_cls_names_to_wrap=["MiniMaxH3TransformerBlock"],
-                cpu_ram_efficient_loading=False,
+                cpu_ram_efficient_loading=EFFICIENT_LOADING,
                 reshard_after_forward=True,
                 activation_checkpointing=True,
             ),

@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from accelerate.utils import DistributedType
+from torch.distributed.fsdp import CPUOffloadPolicy, OffloadPolicy
 
 from flow_factory.hparams import ParallelismArguments
 from flow_factory.hparams.optimizer_args import (
@@ -913,3 +914,119 @@ def test_unsupported_launcher_dimensions_fail_before_model_loading(
     message = "runtime cp_size=2" if dimension == "cp_size" else "independent sequence"
     with pytest.raises(ValueError, match=message):
         loader.load_trainer(config)
+
+
+def _sharded_accelerator(
+    *, is_fsdp2: bool = True, cpu_offload: object = OffloadPolicy()
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        distributed_type=DistributedType.FSDP if is_fsdp2 else DistributedType.MULTI_GPU,
+        is_fsdp2=is_fsdp2,
+        parallelism_config=SimpleNamespace(tp_size=2),
+        state=SimpleNamespace(
+            deepspeed_plugin=None,
+            fsdp_plugin=SimpleNamespace(cpu_ram_efficient_loading=True, cpu_offload=cpu_offload),
+        ),
+    )
+
+
+_QUALIFIED_ADAPTER = SimpleNamespace(
+    __name__="QualifiedAdapter",
+    supports_sharded_target_materialization=True,
+    tensor_parallel_plan=lambda: {"blocks.0.to_q": object()},
+    sequence_parallel_plan=lambda: {},
+    sequence_parallel_by_default=False,
+)
+
+
+_BLOCKED = [
+    (_sharded_accelerator(is_fsdp2=False), _QUALIFIED_ADAPTER, 1, "builds the prepared layout"),
+    (
+        _sharded_accelerator(),
+        SimpleNamespace(__name__="PlainAdapter"),
+        1,
+        "PlainAdapter does not declare",
+    ),
+    (_sharded_accelerator(), _QUALIFIED_ADAPTER, 2, "cp_size=2"),
+    (_sharded_accelerator(cpu_offload=CPUOffloadPolicy()), _QUALIFIED_ADAPTER, 1, "CPU offload"),
+]
+
+
+@pytest.mark.parametrize(("accelerator", "adapter_cls", "cp_size", "pattern"), _BLOCKED)
+def test_explicit_sharded_materialization_outside_its_boundary_is_refused(
+    accelerator: SimpleNamespace, adapter_cls: object, cp_size: int, pattern: str
+) -> None:
+    from flow_factory.trainers.multirole.backend import resolve_target_materialization
+
+    args = ParallelismArguments(target_materialization="sharded", cp_size=cp_size)
+    with pytest.raises(ValueError, match=pattern):
+        resolve_target_materialization(accelerator, adapter_cls, args)
+
+
+@pytest.mark.parametrize(("accelerator", "adapter_cls", "cp_size", "pattern"), _BLOCKED)
+def test_unset_materialization_falls_back_to_replicated_outside_its_boundary(
+    accelerator: SimpleNamespace,
+    adapter_cls: object,
+    cp_size: int,
+    pattern: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    from flow_factory.trainers.multirole.backend import resolve_target_materialization
+
+    args = ParallelismArguments(cp_size=cp_size)
+    with caplog.at_level(logging.INFO):
+        assert resolve_target_materialization(accelerator, adapter_cls, args) == "replicated"
+    assert args.target_materialization == "replicated"
+    (record,) = [r for r in caplog.records if "prefers sharded" in r.getMessage()]
+    assert pattern in record.getMessage()
+    assert record.levelno == (logging.WARNING if accelerator.is_fsdp2 else logging.INFO)
+
+
+def test_unset_materialization_resolves_to_sharded_inside_its_boundary() -> None:
+    from flow_factory.trainers.multirole.backend import resolve_target_materialization
+
+    args = ParallelismArguments(tp_size=2)
+    assert resolve_target_materialization(_sharded_accelerator(), _QUALIFIED_ADAPTER, args) == (
+        "sharded"
+    )
+    assert args.materializes_targets_sharded
+
+
+def test_explicit_replicated_materialization_is_honored() -> None:
+    from flow_factory.trainers.multirole.backend import resolve_target_materialization
+
+    args = ParallelismArguments(target_materialization="replicated")
+    assert resolve_target_materialization(_sharded_accelerator(), _QUALIFIED_ADAPTER, args) == (
+        "replicated"
+    )
+
+
+def test_sharded_materialization_lets_tensor_parallelism_use_efficient_loading() -> None:
+    """Materialization distributes rank 0's unsharded source itself."""
+    from flow_factory.trainers.multirole.backend import validate_tensor_parallel_backend_plan
+
+    accelerator = _sharded_accelerator()
+    optimizer_args = (AdamWOptimizerArguments(name="default"),)
+    validate_tensor_parallel_backend_plan(
+        accelerator, _QUALIFIED_ADAPTER, optimizer_args, target_materialization="sharded"
+    )
+    with pytest.raises(ValueError, match="target_materialization: sharded"):
+        validate_tensor_parallel_backend_plan(accelerator, _QUALIFIED_ADAPTER, optimizer_args)
+
+
+@pytest.mark.parametrize("offload, expected", [(False, "sharded"), (True, "replicated")])
+def test_real_fsdp2_plugins_resolve_offload_by_policy_type(offload: bool, expected: str) -> None:
+    """FSDP2's default ``OffloadPolicy()`` is truthy but offloads nothing."""
+    from accelerate import FullyShardedDataParallelPlugin
+
+    from flow_factory.trainers.multirole.backend import resolve_target_materialization
+
+    accelerator = _sharded_accelerator()
+    accelerator.state.fsdp_plugin = FullyShardedDataParallelPlugin(
+        fsdp_version=2, cpu_offload=offload
+    )
+    args = ParallelismArguments(tp_size=2)
+
+    assert resolve_target_materialization(accelerator, _QUALIFIED_ADAPTER, args) == expected

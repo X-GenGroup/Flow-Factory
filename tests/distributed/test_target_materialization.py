@@ -217,6 +217,8 @@ _CASES = [
     ("sd3_5", None),
     ("z_image", None),
     ("h3", None),
+    ("flux1", None),
+    ("qwen_image_21", None),
 ]
 
 

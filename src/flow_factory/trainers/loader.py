@@ -41,6 +41,7 @@ from .common.context_parallel import (
 )
 from .multirole import (
     configure_checkpointing_backend_plan,
+    resolve_target_materialization,
     validate_optimizer_backend_plan,
     validate_supported_distributed_plan,
     validate_tensor_parallel_backend_plan,
@@ -314,12 +315,14 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # rejecting it in BaseTrainer.__init__ is too late.
     validate_supported_distributed_plan(accelerator)
     validate_optimizer_backend_plan(accelerator, tuple(config.optimizer_args))
+    resolve_target_materialization(accelerator, adapter_cls, config.parallelism_args)
     validate_tensor_parallel_backend_plan(
         accelerator,
         adapter_cls,
         config.optimizer_args,
         config.parallelism_args.sequence_parallel,
         config.parallelism_args.effective_tensor_parallel_size,
+        config.parallelism_args.target_materialization,
     )
     validate_tensor_parallel_run_config(config, adapter_cls)
     configure_checkpointing_backend_plan(accelerator, config.training_args)

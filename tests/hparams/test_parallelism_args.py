@@ -187,6 +187,7 @@ def test_sequence_parallelism_is_tri_state_and_unset_defers_to_the_adapter() -> 
         "cp_size": None,
         "sequence_parallel": True,
         "verify_replicated_inputs": False,
+        "target_materialization": None,
     }
 
 
@@ -212,3 +213,24 @@ def test_verifying_replicated_inputs_needs_a_group_and_a_boolean() -> None:
         ParallelismArguments.from_dict({"verify_replicated_inputs": True})
     with pytest.raises(ValueError, match="verify_replicated_inputs must be a boolean"):
         ParallelismArguments(tp_size=2, verify_replicated_inputs="yes")
+
+
+def test_target_materialization_is_unset_until_resolved() -> None:
+    args = ParallelismArguments()
+
+    assert args.target_materialization is None
+    assert not args.materializes_targets_sharded
+    assert args.to_dict()["target_materialization"] is None
+
+
+def test_sharded_target_materialization_is_parsed() -> None:
+    args = ParallelismArguments.from_dict({"tp_size": 2, "target_materialization": "sharded"})
+
+    assert args.materializes_targets_sharded
+
+
+def test_unknown_target_materialization_is_rejected() -> None:
+    with pytest.raises(ValueError, match="target_materialization must be unset or one of"):
+        ParallelismArguments(target_materialization="meta")
+    with pytest.raises(ValueError, match="must be unset or one of"):
+        ParallelismArguments.from_dict({"target_materialization": "auto"})

@@ -90,6 +90,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Stable Diffusion 3.5 medium."""
 
     sequence_parallel_by_default = True
+    supports_sharded_target_materialization = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
 
     context_parallel_capability = ContextParallelCapability(

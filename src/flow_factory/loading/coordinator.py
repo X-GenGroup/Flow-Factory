@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
-from typing import Any, Iterable, List, Optional, Union
+from typing import Any, Callable, Iterable, List, Optional, Union
 
 from accelerate import Accelerator
 from torch import nn
@@ -94,6 +94,10 @@ class ModelLoadCoordinator:
         components: Optional[Union[str, List[str]]],
     ) -> None:
         self.backend.components_loaded(components)
+
+    def detach_targets(self, bundle: nn.Module, canonical_name: Callable[[str], str]) -> None:
+        """Retain loaded target values for materialization after backend preparation."""
+        self.backend.detach_targets(bundle, canonical_name)
 
     def load_components(
         self,

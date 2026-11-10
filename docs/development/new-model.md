@@ -759,6 +759,11 @@ Adapters should leave `supports_fsdp2_cpu_efficient_loading = False` unless thei
 component source can selectively materialize TARGET state without applying the
 rank-zero/meta policy to text encoders, VAEs, or reward models. Modular adapters
 that satisfy this contract may opt in.
+Set `supports_sharded_target_materialization = True` only after a case in
+`tests/distributed/test_target_materialization.py` proves that meta-first TP/FSDP2
+preparation reproduces the adapter's replicated local shards bitwise. Modules that
+derive state from parameter values while they are being constructed or transformed
+cannot opt in, because those values are on meta until materialization.
 Keep declared specs distinct from materialized modules; use
 `materialize_components(None)` only when the workflow genuinely needs every
 declaration. A prepared/replacement override must be installed through the runtime so

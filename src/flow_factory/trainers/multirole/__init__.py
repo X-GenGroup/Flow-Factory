@@ -18,6 +18,8 @@ from .backend import (
     MultiRoleBackendValidationMixin,
     configure_checkpointing_backend_plan,
     configure_deepspeed_micro_batch_size,
+    resolve_target_materialization,
+    sharded_target_materialization_blocker,
     tensor_parallel_size,
     validate_optimizer_backend_plan,
     validate_supported_distributed_plan,
@@ -35,6 +37,8 @@ __all__ = [
     "tensor_parallel_size",
     "validate_optimizer_backend_plan",
     "validate_supported_distributed_plan",
+    "resolve_target_materialization",
+    "sharded_target_materialization_blocker",
     "validate_tensor_parallel_backend_plan",
     "validate_tensor_parallel_run_config",
 ]

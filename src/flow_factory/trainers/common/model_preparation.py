@@ -32,7 +32,7 @@ from ...models.parallelism.plan import resolve_parallel_plan, sequence_parallel_
 from ...models.parallelism.runtime import apply_tensor_parallel
 from ...utils.dist import parallel_topology
 from ...utils.logger_utils import setup_logger
-from ..multirole.backend import tensor_parallel_size
+from ..multirole.backend import resolve_target_materialization, tensor_parallel_size
 
 logger = setup_logger(__name__)
 
@@ -43,8 +43,11 @@ class ModelPreparation:
     The adapter materializes variants/LoRA and establishes precision first. The
     trainer then requests parallel transforms, constructs the optimizer over
     their final parameters, prepares one backend root, validates role ownership,
-    and installs routes. Snapshots/resume and ordinary shared acceleration stay
-    after this sequence. Declared CP consumes its attention owner before hooks.
+    and installs routes. When ``parallelism.target_materialization`` resolves to
+    ``sharded``, the target parameters move to meta after initial-state
+    synchronization, and the backend fills their local shards during
+    ``prepare``. Snapshots/resume and ordinary shared acceleration stay after
+    this sequence. Declared CP consumes its attention owner before hooks.
 
     A failed mutation leaves its phase in progress: retrying could transform a
     partially prepared module twice, so the caller must construct a fresh model.
@@ -80,6 +83,16 @@ class ModelPreparation:
             )
         self._phase = "parallelizing"
         self.load_coordinator.synchronize_initial_state(registry.bundle_members().values())
+        resolve_target_materialization(self.accelerator, type(self.adapter), self.parallelism)
+        if self.parallelism.materializes_targets_sharded:
+            # The same member names that `prepare` bundles, so sources match prepared names.
+            self.load_coordinator.detach_targets(
+                ModelBundle(registry.bundle_members()),
+                registry._canonical_prepared_parameter_name,
+            )
+            # Detaching replaces every target parameter; TP=1 would otherwise leave the
+            # optimizer built from the pre-detach parameters.
+            registry.rebind_parameters(registry.bundle_members())
         self._apply_tensor_parallel()
         self._apply_context_parallel(attention_backend)
         self._phase = "parallelized"
