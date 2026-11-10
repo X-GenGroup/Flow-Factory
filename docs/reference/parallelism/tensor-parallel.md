@@ -290,13 +290,19 @@ With `fsdp_cpu_ram_efficient_loading: true`, only rank 0's source is used, broad
 parameter at a time. TP can therefore use efficient loading under `sharded`, while the
 replicated path still rejects that combination.
 
-An explicit `sharded` is rejected before loading in four cases, and an unset value falls back
+An explicit `sharded` is rejected before loading in three cases, and an unset value falls back
 in the same cases:
 
 - a backend other than FSDP2;
 - an adapter that does not declare `supports_sharded_target_materialization`;
-- context parallelism, whose hooks on meta modules are not yet qualified;
 - FSDP2 CPU offload.
+
+Context parallelism is inside this boundary. CP shards activations, not parameters, so the
+local regions still come only from the TP/FSDP2 placements over `dp_shard x cp`. Each adapter's
+`configure_context_parallel_module` and `install_context_parallel_module` run on the meta
+targets between TP and FSDP2. On gloo, every CP-capable registry layout at DP2xCP2 and
+DP2xCP2xTP2 reproduces the replicated path's local shards, placements, buffers and installed CP
+configs bitwise, and one CP forward and backward wherever the fixture supplies native inputs.
 
 ### Checkpoint-backed targets
 

@@ -102,7 +102,7 @@ which leaves under 2 GiB of headroom on 79.19 GiB devices. DP2×TP2 remains unsu
 Run this placement with `FF_H3_CAPACITY_DP=4 FF_H3_CAPACITY_TP=2`.
 
 With `parallelism.target_materialization` unset or `sharded` (H3 resolves an unset value to
-`sharded` under FSDP2 without CP or offload), target parameters are on meta until
+`sharded` under FSDP2 without CPU offload, including with CP), target parameters are on meta until
 FSDP2 preparation finishes. Each rank then allocates and fills only its own local shards.
 The same canary, run with `FF_H3_TARGET_MATERIALIZATION=sharded` on unpatched Accelerate
 1.15.0, passed every rank. Per-rank memory:

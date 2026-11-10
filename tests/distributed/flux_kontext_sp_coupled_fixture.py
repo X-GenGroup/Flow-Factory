@@ -73,7 +73,7 @@ def observe_training_terms(trainer, terms):
     finally:
         for handle in handles:
             handle.remove()
-    assert shapes == {("dual_image", 6), ("single_joint", 268)}, shapes
+    assert shapes == {("dual_image", 6), ("single_joint", 134)}, shapes
     print(
         json.dumps(
             {

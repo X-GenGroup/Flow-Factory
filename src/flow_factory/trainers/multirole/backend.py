@@ -51,14 +51,16 @@ def validate_supported_distributed_plan(accelerator: Accelerator) -> None:
 
 
 def sharded_target_materialization_blocker(
-    accelerator: Accelerator, adapter_cls: type, context_parallel_size: int = 1
+    accelerator: Accelerator, adapter_cls: type
 ) -> Optional[str]:
     """Return why sharded target materialization cannot run here, or ``None``.
+
+    Context parallelism is inside the boundary: CP shards activations, not parameters, and
+    each adapter's CP hooks install on meta targets with replicated-identical results.
 
     Args:
         accelerator: Runtime backend whose plan is being validated.
         adapter_cls: The resolved adapter class, consulted for its capability.
-        context_parallel_size: The configured context-parallel degree.
 
     Returns:
         A user-facing reason naming the blocking setting, or ``None`` when the
@@ -71,11 +73,6 @@ def sharded_target_materialization_blocker(
         )
     if not getattr(adapter_cls, "supports_sharded_target_materialization", False):
         return f"{adapter_cls.__name__} does not declare supports_sharded_target_materialization"
-    if context_parallel_size > 1:
-        return (
-            f"context parallelism (parallelism.cp_size={context_parallel_size}) is not yet "
-            "qualified; installing Diffusers CP hooks on meta modules is unverified"
-        )
     fsdp_plugin = accelerator.state.fsdp_plugin
     # FSDP2's default ``OffloadPolicy()`` means no offload; only its CPU subclass offloads.
     if isinstance(getattr(fsdp_plugin, "cpu_offload", None), CPUOffloadPolicy):
@@ -114,9 +111,7 @@ def resolve_target_materialization(
     if requested == "replicated":
         resolved = "replicated"
     else:
-        blocker = sharded_target_materialization_blocker(
-            accelerator, adapter_cls, parallelism_args.effective_context_parallel_size
-        )
+        blocker = sharded_target_materialization_blocker(accelerator, adapter_cls)
         if blocker is None:
             resolved = "sharded"
             if requested is None and getattr(accelerator, "is_main_process", True):
