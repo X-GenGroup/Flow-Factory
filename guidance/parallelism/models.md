@@ -34,8 +34,8 @@ registered adapter. All CP rows below use Ulysses; none admits Ring.
 | `minimax-h3-t2va`, `minimax-h3-fl2va`, `minimax-h3-ref2va` | Packed video/audio/text, independent text refinement and ordered heterogeneous references. Ref2VA prepares its declared reference transformer. | [MiniMax H3](../../docs/reference/parallelism/models/minimax-h3.md) |
 
 Model loading remains subject to each adapter's dependencies. In particular, optional model
-packages and exact development Diffusers revisions are not interchangeable with the ordinary
-release tuple. See the linked contract before choosing a checkpoint or environment.
+packages and native attention kernels remain model-specific. Current adapters use released
+Diffusers >=0.42.1; CP qualifies the 0.42.x line with Torch 2.10.x and Accelerate 1.15.x. See the linked contract before choosing a checkpoint or environment.
 
 ## Parameter coverage
 

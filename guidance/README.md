@@ -5,6 +5,7 @@ checks that the model, algorithm and resource layout can work together.
 
 | Guide | Use it to |
 |---|---|
+| [Installation](installation.md) · [Loading and resume](configuration/loading-and-resume.md) | Choose a compatible environment and migrate checkpoints |
 | [Training workflow](training/workflow.md) | Follow data preparation, generation, feedback and optimization |
 | [Algorithms](training/algorithms.md) | Choose online learning, offline training or distillation |
 | [Datasets](training/datasets.md) · [Rewards](training/rewards.md) | Configure training inputs and feedback |

@@ -63,11 +63,10 @@ class ParallelismArguments(ArgABC):
     activation memory of the norm/residual/modulation region, which is where
     these architectures spend most of it. It requires ``tp_size > 1``.
 
-    Measured at the production settings, tensor parallelism alone costs about as
-    much throughput as it saves memory, while adding sequence parallelism saves
-    three to four times as much on the same tensor-parallel group -- but an
-    overlay is only safe to turn on where it has been checked against the
-    architecture's real inputs. The field is therefore tri-state:
+    Sequence parallelism reduces retained activations in model-declared regions.
+    Its memory and communication costs depend on the architecture, token geometry
+    and checkpointing; parameter coverage is not a throughput guarantee.
+    The field is tri-state:
 
     * unset (``None``) -- the adapter decides, through its
       ``sequence_parallel_by_default``: on for SD3.5 and Wan T2V, whose overlays
@@ -85,8 +84,9 @@ class ParallelismArguments(ArgABC):
     validation runs rather than production.
 
     ``cp_size`` splits attention tokens across ranks sharing one logical sample.
-    The experimental path is Wan T2V SFT with FSDP2 and Ulysses, optionally
-    composed with the declared training-aware TP/SP plan.
+    FSDP2 with Ulysses uses the model and trainer capability contracts, optionally
+    composed with the declared training-aware TP/SP plan. The loaded layout,
+    precision and dependency tuple must pass their preflight guards.
     The adapter restores the full output before scheduler or objective execution.
     Logical data parallelism is ``num_processes / (tp_size * cp_size)``.
 
@@ -95,7 +95,7 @@ class ParallelismArguments(ArgABC):
 
     * unset (``None``, default) -- prefer ``sharded``. When the run is outside
       its qualified boundary (not FSDP2, an adapter without the capability,
-      context parallelism, or FSDP2 CPU offload), fall back to ``replicated``,
+      or FSDP2 CPU offload), fall back to ``replicated``,
       with a warning under FSDP2.
     * ``replicated`` -- every rank keeps its loaded root while tensor
       parallelism and FSDP2 shard it. The initialization peak holds the
