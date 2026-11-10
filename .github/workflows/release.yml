@@ -1,0 +1,80 @@
+name: Publish stable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing reviewed stable tag; dispatch this workflow from the same tag
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stable-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag, checked-out workflow source and package version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 scripts/check_release_identity.py --tag "$RELEASE_TAG"
+          test -f "docs/release/${RELEASE_TAG%.*}-notes.md"
+
+  packages:
+    needs: identity
+    uses: ./.github/workflows/release-artifacts.yml
+
+  image:
+    needs: packages
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/container.yml
+    with:
+      tag: ${{ inputs.tag }}
+      publish: true
+
+  publish:
+    needs: [packages, image]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          path: release-evidence
+      - name: Assemble durable release assets
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 scripts/check_release_identity.py --tag "$RELEASE_TAG" > release-evidence/identity.json
+          mkdir -p release-assets
+          cp release-evidence/release-artifacts-*/dist/* release-assets/
+          tar -czf "release-assets/flow-factory-${RELEASE_TAG}-evidence.tar.gz" release-evidence
+          cp "docs/release/${RELEASE_TAG%.*}-notes.md" release-assets/RELEASE_NOTES.md
+          cd release-assets
+          sha256sum ./* > SHA256SUMS
+      - name: Publish release with package and evidence hashes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" --verify-tag --draft \
+            --title "Flow-Factory $RELEASE_TAG" --notes-file "docs/release/${RELEASE_TAG%.*}-notes.md"
+          gh release upload "$RELEASE_TAG" release-assets/*
+          gh release edit "$RELEASE_TAG" --draft=false

@@ -1,5 +1,14 @@
 # CUDA training image
 
+## Current v0.5 preparation
+
+The current recipe uses Python 3.12, CUDA 12.9, Torch 2.10.0, Accelerate 1.15.0 and Diffusers
+0.42.1, and installs a built Flow-Factory wheel. It is separate from the historical v0.2 image
+record below. See [installation](../guidance/installation.md) and
+[publishing](../docs/release/publishing.md) for immutable-commit previews, post-merge release
+publication, image/package identity and durable evidence. No v0.5 image is implied by this source.
+
+
 The published v0.2.0 image contains Python 3.12, CUDA 12.9.1, PyTorch 2.10, the released Diffusers 0.41
 package, Accelerate, DeepSpeed, W&B and FFmpeg shared libraries. It targets Linux `amd64` with an
 NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
