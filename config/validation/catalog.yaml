@@ -15233,6 +15233,58 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: preprocessing-module-deferral
+  covers:
+  - data.preprocessing_module_deferral
+  facets:
+  - model_runtime
+  - distributed
+  owners:
+  - src/flow_factory/data_utils/loader.py
+  - src/flow_factory/trainers/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/data_utils/test_deferred_preprocessing_modules.py
+  - tests/distributed/test_preprocessing_cache_agreement.py
+  - tests/models/runtime/test_component_runtime.py
+  fixture: A three-prompt JSONL source preprocessed into a real merged cache, a preprocessor that fails
+    unless its modules were loaded first, a Gloo pair whose ranks disagree on cache hits, and trainer
+    lifecycle fakes for the dataloader build. The Gloo pair is a contract control.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: A merged-cache miss loads the preprocessing modules exactly once before preprocessing;
+      a hit, disabled preprocessing or an unregistered loader never loads them, and a cached dataset
+      equals the built one; force_reprocess loads; one rank missing its cache makes every rank load; a
+      fully cached trainer build neither loads nor offloads the modules.
+    reward: none
+  artifacts:
+  - tests/data_utils/test_deferred_preprocessing_modules.py
+  - tests/distributed/test_preprocessing_cache_agreement.py
+  - tests/models/runtime/test_component_runtime.py
+  cost_seconds: 40
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - datasets
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
 - id: checkpoint-slice-construction
   covers:
   - loading.checkpoint_slices

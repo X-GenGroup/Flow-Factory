@@ -1028,6 +1028,17 @@ owners:
     requires: [loading.checkpoint_slices]
     reason: The adapter and modular loaders decide which targets stay checkpoint-backed.
   - paths:
+    - src/flow_factory/data_utils/loader.py
+    - tests/data_utils/test_deferred_preprocessing_modules.py
+    - tests/distributed/test_preprocessing_cache_agreement.py
+    - tests/models/runtime/test_component_runtime.py
+    requires: [data.preprocessing_module_deferral]
+    reason: Dataloader builds load preprocessing modules only when some rank must preprocess a split.
+  - paths: [src/flow_factory/trainers/abc.py]
+    symbols: ['*._init_dataloader']
+    requires: [data.preprocessing_module_deferral]
+    reason: The trainer registers the deferred preprocessing-module loader and offloads only what loaded.
+  - paths:
     - src/flow_factory/models/precision.py
     requires: [precision.original_contracts, loading.checkpoint_slices]
     reason: Role dtype casts set original precision and must retype checkpoint-backed placeholders

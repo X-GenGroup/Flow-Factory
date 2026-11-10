@@ -2,6 +2,10 @@
 
 ## 0.5.0-beta.1 (unreleased)
 
+- Load an adapter's `preprocessing_modules` only when some rank misses a merged preprocessing cache.
+  A fully cached run no longer loads text, image or VAE encoders before building its dataloaders;
+  for MiniMax H3 that skips its 33.4B BF16 text encoder on every rank. Ranks agree on the decision
+  with one gather per split, and dataset cache behavior is unchanged.
 - Add `parallelism.target_materialization` for FSDP2 target roots (P12j). Unset, the default,
   prefers `sharded` and falls back to `replicated` outside the qualified boundary, with a warning
   under FSDP2. `sharded` makes such a run an error, and `replicated` keeps the previous path. After
