@@ -60,6 +60,7 @@ POLICY_INPUTS = (
     "scripts/validation_plan.py",
     "scripts/validation_evidence.py",
     "scripts/validation_acceptance.py",
+    "scripts/validation_merge.py",
     "scripts/validation_catalog.py",
     "scripts/validation_changes.py",
     "scripts/validate_validation_plan.py",
@@ -485,9 +486,9 @@ def generate(root: Path, base: str, head: str, additions: list[str], extra: list
     }
     # Bind the acceptance consumer only when present at this source, preserving
     # artifact dictionaries and digests for sources that do not contain it.
-    acceptance_path = "scripts/validation_acceptance.py"
-    if acceptance_path in paths and source(acceptance_path) is None:
-        paths.remove(acceptance_path)
+    for optional in ("scripts/validation_acceptance.py", "scripts/validation_merge.py"):
+        if optional in paths and source(optional) is None:
+            paths.remove(optional)
     if not policy.get("change_aware_routing", False):
         paths.discard("scripts/validation_changes.py")
     identities = {}
@@ -948,6 +949,9 @@ def main() -> int:
     gate.add_argument("--baseline-bundle", type=Path)
     gate.add_argument("--supplemental-bundle", type=Path, action="append")
     gate.add_argument("--repository")
+    gate.add_argument(
+        "--merged-repository", help="Verify original PR gates for a merged first-parent range"
+    )
     pack = commands.add_parser("bundle")
     pack.add_argument("--plan", type=Path, required=True)
     pack.add_argument("--results", type=Path, required=True)
@@ -1041,6 +1045,12 @@ def main() -> int:
                 baseline_bundle=args.baseline_bundle,
                 supplemental_bundles=args.supplemental_bundle,
             )
+        if args.merged_repository and summary["status"] != "pass":
+            import validation_merge
+
+            summary["merge_acceptance"] = validation_merge.decide(
+                ROOT, args.merged_repository, plan, summary, combined
+            )
         if args.output:
             write_json(args.output, summary)
         print(json.dumps(summary, indent=2))
@@ -1049,6 +1059,7 @@ def main() -> int:
             if (
                 summary["status"] == "pass"
                 or summary.get("acceptance", {}).get("status") == "accepted_incremental"
+                or summary.get("merge_acceptance", {}).get("status") == "accepted_merged"
             )
             else 1
         )

@@ -240,3 +240,48 @@ the dispatch and CI re-check the referenced artifact/run against the repository 
 head, base, plan, reviewed file delta, test contract, or required incremental witness requires a
 new explicit review. Preserve original failures and the distinction between historical proof,
 actual incremental execution, and the acceptance decision in PR prose.
+
+## Evidence after merging PRs
+
+When current evidence is incomplete, a push to `main` validates each first-parent transition
+between the push's original base and head. A complete current pass needs no historical artifacts. `scripts/validation_merge.py` produces a separate `accepted_merged` decision; the ordinary
+case report remains unchanged. A blocked historical case is not rewritten as a current-head pass.
+
+For every transition the verifier requires:
+
+1. One GitHub-recorded merged PR from this repository. Stack PRs may retain their original branch
+   base; its complete Git tree must equal the actual merge parent's tree, and the PR head tree
+   must equal the merged tree. Squash merges therefore work without inventing commit ancestry.
+2. The latest original PR quality run and attempt must have succeeded. Its unexpired
+   `validation-report-RUN-ATTEMPT` artifact must contain the original plan, CPU observations and
+   report. An older green attempt cannot hide a newer failed run.
+3. The original plan is regenerated and its source hashes checked. CPU assertion logs and any
+   external bundle are checked by the existing result validator. An incremental review is
+   recomputed against its authenticated original baseline artifacts; the uploaded report must
+   exactly match the recomputed decision.
+4. The current merge still passes fresh `harness-contracts` and `repository-consistency` tests.
+   Current failures or uncovered selections cannot be accepted by carrying historical evidence.
+
+The resulting receipt records each PR, merge and parent SHA, original source base/head and plan
+hash, run/attempt, artifact ID/hash, qualification status and incremental acceptance. It certifies
+accepted source transitions, not a new combined GPU campaign, performance result or release.
+The push workflow archives this receipt with its normal report. PR checks keep their existing
+exact-source and explicit incremental acceptance behavior.
+
+For a clean checkout at the merged head, the same command is available locally:
+
+```bash
+python3 scripts/quality.py validation report --plan PLAN.json --results CPU.json \
+  --expected-commit MERGED_HEAD --merged-repository OWNER/REPO --output REPORT.json
+```
+
+Use the original push comparison base when generating `PLAN.json`. The verifier does not narrow
+that base to skip unaccepted changes. It admits at most 32 transitions and refuses direct commits,
+ambiguous PRs, fork PRs, changed/conflicted source trees, missing/expired artifacts and unsupported
+reports. These cases need explicit source review/evidence; changing a label or rerunning old CI
+cannot manufacture that proof. An old main run executes the old workflow: validating it with the
+new verifier does not retroactively change its GitHub check result.
+
+Keep evidence artifacts available until release evidence has been archived durably. Deleting
+source branches is safe only while their commit objects remain fetchable by SHA and the associated
+artifacts remain available. Source-tree equivalence is intentionally stricter than patch similarity.
