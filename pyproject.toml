@@ -122,3 +122,6 @@ target-version = ['py311', 'py312']
 [tool.isort]
 profile = "black"
 line_length = 100
+
+[tool.setuptools.package-data]
+flow_factory = ["models/sensenova/THIRD_PARTY_NOTICES.md", "models/bagel/data/configs/*.yaml"]
