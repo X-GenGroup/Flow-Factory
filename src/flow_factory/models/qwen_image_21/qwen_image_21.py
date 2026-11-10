@@ -211,6 +211,7 @@ class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
     supports_diffusers_cache = False
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
     context_parallel_capability = ContextParallelCapability(
         layout=QwenImage21ContextParallelLayout.PREFIX_BLOCK_CAUSAL, tensor_parallel=True
     )

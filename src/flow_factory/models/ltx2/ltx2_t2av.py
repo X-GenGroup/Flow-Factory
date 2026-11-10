@@ -221,6 +221,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     """
 
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
 
     context_parallel_capability = ContextParallelCapability(
         layout=LTX2ContextParallelLayout.JOINT_AUDIO_VIDEO, tensor_parallel=True

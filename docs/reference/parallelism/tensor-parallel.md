@@ -298,8 +298,38 @@ in the same cases:
 - context parallelism, whose hooks on meta modules are not yet qualified;
 - FSDP2 CPU offload.
 
-Every rank still loads the target root on CPU before detaching it. Reading checkpoint slices
-directly is later [P12j](../../../roadmap/milestones/v0.5.md#p12j) work.
+### Checkpoint-backed targets
+
+Adapters that also declare `supports_checkpoint_slice_loading` construct their target components
+without reading weights once `sharded` is resolved. This covers every adapter that loads through
+`BaseAdapter._load_diffusers_pipeline` (SD3.5, Wan2.1/2.2, Flux1/Kontext, Flux2/Klein,
+Qwen-Image/Edit/2.1, Z-Image and LTX-2) and every adapter that loads through
+`ModularPipelineRuntime` (MiniMax H3 and Flux3). The modular runtime builds requested targets from
+their `ComponentSpec` and loads the remaining components natively.
+
+- **Construction.** Each target parameter becomes a `CheckpointParameter`, a stride-0 placeholder
+  with the dtype the native loader would give it. Buffers stay real. Every rank later reads only
+  its own block of each tensor from the safetensors files.
+- **Parity with the native loader.** Dtypes match `from_pretrained` in both loader modes:
+  - `low_cpu_mem_usage` casts to the requested dtype and honors `_keep_in_fp32_modules`.
+  - Eager loading assigns stored tensors only when the first state entry already has the stored
+    dtype.
+
+  Construction disables initialization, as the native loader does, so LoRA draws the same global
+  RNG values and local shards equal native loading bitwise.
+- **Safety.** Reading a placeholder's value before materialization raises.
+- **Fallback.** These checkpoints keep native loading, with a warning: missing or reshaped keys,
+  legacy attention renames, quantized or non-safetensors weights, and a resume that writes base
+  weights first.
+
+On released Wan2.1-T2V-14B stored in FP32 and loaded in BF16, native construction peaks at
+80.53 GiB host RSS and takes 26.7 s per process. Checkpoint-backed construction peaks at 0.84 GiB
+and takes 0.1 s. Spot checks of the `_keep_in_fp32_modules` tensors and BF16 tensors match
+exactly. An FP32 checkpoint loaded in FP32 is already memory-mapped by the native loader, so the
+saving appears when dtypes are converted, as with H3's FP32 originals of a BF16 checkpoint.
+Checkpoint-backed targets also skip the FSDP2 initial-state broadcast, which otherwise sends every
+target parameter from rank 0: about 66 GB per rank for H3 in BF16. Bagel and SenseNova build
+their roots with handwritten and Transformers loaders, so they still load natively.
 
 ## Checkpoint and compatibility limits
 

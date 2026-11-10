@@ -12,10 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, List, Mapping
+import os
+from pathlib import Path
+from typing import Any, List, Mapping, Optional, Sequence
 
+from huggingface_hub import snapshot_download
+from torch import nn
+
+from ...loading.checkpoint_slices import construct_from_checkpoint, requests_component
+from ...utils.logger_utils import setup_logger
 from ..precision import DTypePolicy, build_component_load_dtype_kwargs
 from .abc import ComponentRuntime
+
+logger = setup_logger(__name__)
 
 
 class ModularPipelineRuntime(ComponentRuntime):
@@ -27,10 +36,12 @@ class ModularPipelineRuntime(ComponentRuntime):
         *,
         component_load_dtype_manifest: DTypePolicy = None,
         component_load_dtype_overrides: DTypePolicy = None,
+        checkpoint_backed_request: Sequence[str] = (),
     ) -> None:
         super().__init__(pipeline)
         self.component_load_dtype_manifest = component_load_dtype_manifest
         self.component_load_dtype_overrides = component_load_dtype_overrides
+        self.checkpoint_backed_request = tuple(checkpoint_backed_request)
 
     @classmethod
     def from_adapter(cls, adapter: Any, pipeline: Any) -> "ModularPipelineRuntime":
@@ -39,6 +50,7 @@ class ModularPipelineRuntime(ComponentRuntime):
             pipeline,
             component_load_dtype_manifest=adapter._component_load_dtype_manifest,
             component_load_dtype_overrides=adapter._component_load_dtype_overrides,
+            checkpoint_backed_request=adapter._checkpoint_backed_request(),
         )
 
     @property
@@ -98,7 +110,13 @@ class ModularPipelineRuntime(ComponentRuntime):
                 text_encoder_names=self.text_encoder_names,
                 requested_names=unloaded,
             )
-            load_components(names=unloaded, **load_kwargs)
+            for name in unloaded:
+                module = self._checkpoint_backed_component(name, load_kwargs.get("dtype"))
+                if module is not None:
+                    self.pipeline.update_components(**{name: module})
+            unloaded = [name for name in unloaded if self._get_materialized_component(name) is None]
+            if unloaded:
+                load_components(names=unloaded, **load_kwargs)
 
         missing = [name for name in names if self._get_materialized_component(name) is None]
         if missing:
@@ -107,3 +125,39 @@ class ModularPipelineRuntime(ComponentRuntime):
                 f"expected={missing}, received_specs={self.declared_component_names}, "
                 f"materialized={self._materialized_component_names()}."
             )
+
+    def _checkpoint_backed_component(self, name: str, dtype: Any) -> Optional[nn.Module]:
+        """Build one requested target from its spec without reading weights, or ``None``."""
+        if not requests_component(self.checkpoint_backed_request, name):
+            return None
+        spec = self.pipeline.get_component_spec(name)
+        type_hint = getattr(spec, "type_hint", None)
+        repository = getattr(spec, "pretrained_model_name_or_path", None)
+        if type_hint is None or repository is None or not issubclass(type_hint, nn.Module):
+            return None
+        subfolder = getattr(spec, "subfolder", None) or ""
+        root = (
+            Path(repository)
+            if os.path.isdir(repository)
+            else Path(
+                snapshot_download(
+                    repository,
+                    revision=getattr(spec, "revision", None),
+                    allow_patterns=[f"{subfolder}/*" if subfolder else "*"],
+                )
+            )
+        )
+        component_dtype = (
+            dtype.get(name, dtype.get("default")) if isinstance(dtype, Mapping) else dtype
+        )
+        module, reason = construct_from_checkpoint(
+            type_hint, root / subfolder, component_dtype, variant=getattr(spec, "variant", None)
+        )
+        if module is None:
+            logger.warning("Loading target component %s natively: %s.", name, reason)
+            return None
+        module._diffusers_load_id = spec.load_id
+        logger.info(
+            "Target component %s stays in its checkpoint until sharded materialization", name
+        )
+        return module

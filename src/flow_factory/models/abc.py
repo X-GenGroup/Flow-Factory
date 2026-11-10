@@ -25,6 +25,7 @@ import shutil
 from abc import ABC, abstractmethod
 from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
 from types import MappingProxyType
 from typing import (
     Any,
@@ -72,10 +73,13 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from PIL import Image
 from safetensors.torch import load_file, save_file
 
+import diffusers
+
 from ..contracts import PipelineIOContract
 from ..ema import EMAModuleWrapper
 from ..hparams import *
 from ..hparams.gradient_checkpointing import GradientCheckpointingSpec
+from ..loading.checkpoint_slices import construct_from_checkpoint, requests_component
 from ..samples import (
     BaseSample,
     ComponentTimes,
@@ -254,6 +258,9 @@ class BaseAdapter(ABC):
     # Opt in only after gloo parity proves that meta-first TP/FSDP2 preparation plus
     # materialization reproduces this adapter's replicated local shards bitwise.
     supports_sharded_target_materialization: ClassVar[bool] = False
+    # Opt in only after parity tests prove that checkpoint-backed construction matches the
+    # native loader's parameter dtypes and values for every component this adapter targets.
+    supports_checkpoint_slice_loading: ClassVar[bool] = False
     context_parallel_capability: ClassVar[Optional[ContextParallelCapability]] = None
     context_parallel_component_names: ClassVar[Tuple[str, ...]] = ("transformer",)
     context_parallel_diffusers_revision: ClassVar[Optional[Tuple[str, str]]] = None
@@ -1072,7 +1079,100 @@ class BaseAdapter(ABC):
                 {key: value for key, value in load_dtype_kwargs.items() if key not in kwargs}
             )
 
+        kwargs.update(
+            self._checkpoint_backed_targets(pipeline_class, pretrained_model_name_or_path, kwargs)
+        )
         return pipeline_class.from_pretrained(pretrained_model_name_or_path, **kwargs)
+
+    def _checkpoint_backed_request(self) -> Tuple[str, ...]:
+        """Return the requested target names that may stay checkpoint-backed, or ``()``.
+
+        Requires a resolved ``sharded`` target materialization, the adapter's
+        ``supports_checkpoint_slice_loading`` capability, and no resume that writes base
+        weights before preparation.
+        """
+        parallelism = getattr(self.config, "parallelism_args", None)
+        if (
+            not type(self).supports_checkpoint_slice_loading
+            or parallelism is None
+            or not parallelism.materializes_targets_sharded
+        ):
+            return ()
+        if self.model_args.resume_path and (
+            self.model_args.resume_type == "full" or self.model_args.finetune_type != "lora"
+        ):
+            logger.warning(
+                "Loading target weights natively: model.resume_path(%s) writes base weights "
+                "before preparation, which checkpoint-backed targets cannot hold.",
+                self.model_args.resume_path,
+            )
+            return ()
+        requested = self.model_args.target_components
+        return (requested,) if isinstance(requested, str) else tuple(requested or ())
+
+    def _checkpoint_backed_targets(
+        self, pipeline_class: type, pretrained_model_name_or_path: str, kwargs: Mapping[str, Any]
+    ) -> Dict[str, nn.Module]:
+        """Build target components whose weights stay in their checkpoint until materialization.
+
+        Only runs when ``parallelism.target_materialization`` resolved to ``sharded`` and the
+        adapter declares ``supports_checkpoint_slice_loading``. A component the native loader
+        must transform, and every resume that writes base weights, keeps native loading.
+
+        Returns:
+            Component overrides for ``pipeline_class.from_pretrained``, keyed by component name.
+        """
+        requested = self._checkpoint_backed_request()
+        if not requested:
+            return {}
+        download = {
+            key: kwargs[key]
+            for key in ("cache_dir", "revision", "token", "local_files_only")
+            if key in kwargs
+        }
+        folder = Path(
+            pretrained_model_name_or_path
+            if os.path.isdir(pretrained_model_name_or_path)
+            else pipeline_class.download(pretrained_model_name_or_path, **download)
+        )
+        model_index = pipeline_class.load_config(folder)
+        names = [
+            name
+            for name, value in model_index.items()
+            if isinstance(value, (list, tuple))
+            and len(value) == 2
+            and value[0] == "diffusers"
+            and name not in kwargs
+            and requests_component(requested, name)
+        ]
+        dtype = kwargs.get("dtype", kwargs.get("torch_dtype"))
+        components: Dict[str, nn.Module] = {}
+        for name in names:
+            component_cls = getattr(diffusers, model_index[name][1], None)
+            if component_cls is None:
+                continue
+            component_dtype = (
+                dtype.get(name, dtype.get("default", torch.float32))
+                if isinstance(dtype, Mapping)
+                else dtype
+            )
+            module, reason = construct_from_checkpoint(
+                component_cls,
+                folder / name,
+                component_dtype,
+                variant=kwargs.get("variant"),
+                low_cpu_mem_usage=kwargs.get("low_cpu_mem_usage", True),
+            )
+            if module is None:
+                logger.warning("Loading target component %s natively: %s.", name, reason)
+                continue
+            components[name] = module
+        if components:
+            logger.info(
+                "Target components stay in their checkpoint until sharded materialization: %s",
+                sorted(components),
+            )
+        return components
 
     def _resolve_component_load_dtype_mapping(
         self,

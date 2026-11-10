@@ -28,6 +28,7 @@ from accelerate.utils import DistributedType
 from torch.distributed.tensor import DTensor
 
 from ..utils.logger_utils import setup_logger
+from .checkpoint_slices import checkpoint_reader
 from .domain import ComponentRole, LoadPlan
 from .materialization import ParameterSource, detach_parameters_to_meta
 
@@ -145,7 +146,9 @@ class FSDPBackendLoadRuntime(BackendLoadRuntime):
         tensors = {}
         for index, module in enumerate(modules):
             for name, tensor in (*module.named_parameters(), *module.named_buffers()):
-                tensors.setdefault(id(tensor), (f"{index}.{name}", tensor))
+                # Every rank reads checkpoint-backed values from the same checkpoint.
+                if checkpoint_reader(tensor) is None:
+                    tensors.setdefault(id(tensor), (f"{index}.{name}", tensor))
         values = list(tensors.values())
         metadata = [
             (

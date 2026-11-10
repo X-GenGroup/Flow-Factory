@@ -265,6 +265,7 @@ class Flux2ParallelAdapterMixin:
     """Shared native denoiser layout; adapters retain their own conditioning policy."""
 
     supports_sharded_target_materialization = True
+    supports_checkpoint_slice_loading = True
 
     context_parallel_capability = ContextParallelCapability(
         layout=Flux2ContextParallelLayout.TARGET_REFERENCE_TEXT, tensor_parallel=True

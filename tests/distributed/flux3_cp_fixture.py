@@ -197,6 +197,7 @@ def pipeline_adapter(pipeline, variant):
             sequence_parallel=True,
             effective_context_parallel_size=1,
             effective_tensor_parallel_size=1,
+            materializes_targets_sharded=False,
         ),
         scheduler_args=SimpleNamespace(
             noise_level=0.35, sde_steps=None, num_sde_steps=None, seed=42, dynamics_type="Flow-SDE"

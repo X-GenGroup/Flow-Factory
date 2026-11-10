@@ -121,6 +121,7 @@ class _MiniMaxH3WorkflowAdapter:
     supported_diffusers_cache_policies: ClassVar[frozenset[str]] = H3_DIFFUSERS_CACHE_POLICIES
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = True
     supports_sharded_target_materialization: ClassVar[bool] = True
+    supports_checkpoint_slice_loading: ClassVar[bool] = True
     requires_pairwise_policy_activation_offload: ClassVar[bool] = True
     # Official Diffusers recipe: load at BF16 and let each ModelMixin preserve
     # its declared FP32 islands (including both H3 autoencoders).

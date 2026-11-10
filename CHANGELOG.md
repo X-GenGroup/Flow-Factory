@@ -11,8 +11,14 @@
   Local values equal the replicated path bitwise. TP no longer broadcasts loaded weights. TP may
   combine with `fsdp_cpu_ram_efficient_loading`, which broadcasts rank 0's source per parameter.
   Every registry identifier opts in after gloo shard parity, so an unset value uses `sharded` for
-  all of them under FSDP2. Context parallelism
-  and FSDP2 CPU offload fall back to, or with an explicit `sharded` fail on, `replicated`.
+  all of them under FSDP2. Context parallelism and FSDP2 CPU offload fall back to `replicated`,
+  or fail with an explicit `sharded`.
+- Under `sharded`, adapters loading through `_load_diffusers_pipeline` or `ModularPipelineRuntime`
+  (including MiniMax H3 and Flux3) keep their target weights in the checkpoint. Each rank reads only its own blocks, using dtypes that mirror the native
+  loader, and LoRA draws the same RNG values. Wan2.1-T2V-14B in BF16 drops from 80.53 GiB to
+  0.84 GiB peak host RSS per process. Reading a target value before materialization raises.
+  Checkpoints that need native transforms, and resumes that write base weights, keep native
+  loading.
 
 - Release the CUDA allocator cache once after FSDP2 preparation. Accelerate's preparation
   peak otherwise stays reserved, and cuBLAS/NCCL allocations on the first step can fail.

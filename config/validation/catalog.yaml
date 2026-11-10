@@ -15168,3 +15168,109 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: checkpoint-slice-construction
+  covers:
+  - loading.checkpoint_slices
+  facets:
+  - model_runtime
+  owners:
+  - src/flow_factory/loading/checkpoint_slices.py
+  - src/flow_factory/models/runtime/modular.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/loading/test_checkpoint_slices.py
+  fixture: Saved tiny SD3, Wan2.1 T2V/I2V, Flux1, Qwen-Image, Qwen-Image-2.1, Z-Image, Flux2 Klein,
+    LTX-2, MiniMax H3 and Flux3 transformers in FP32/BF16, single-file and sharded, a saved tiny SD3.5
+    pipeline and a ModularPipeline surface with two component specs.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Checkpoint-backed construction matches native from_pretrained parameter and buffer
+      dtypes, values, names and eval mode for every stored/requested dtype and both loader modes;
+      placeholders hold no weight storage and survive deepcopy; reading a value before materialization
+      raises; the adapter loader backs only targets and keeps native loading for full resume.
+    reward: none
+  artifacts:
+  - tests/loading/test_checkpoint_slices.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/test_region_entry_parity.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/flux3_cp_fixture.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - safetensors
+    - transformers
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: checkpoint-slice-materialization-gloo
+  covers:
+  - preparation.checkpoint_slice_materialization
+  facets:
+  - model_runtime
+  - distributed
+  owners:
+  - src/flow_factory/loading/checkpoint_slices.py
+  - src/flow_factory/loading/materialization.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_checkpoint_slice_materialization.py
+  fixture: Saved tiny SD3 (eager loader) and Wan2.1 T2V (meta loader) in FP32/BF16 with default LoRA,
+    DP2xTP2 gloo, adapter TP plans and per-block FSDP2.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Checkpoint-backed roots receive LoRA weights identical to native loading and
+      materialize every rank's native local shards, dtypes and buffers bitwise while holding no base
+      weight storage.
+    reward: none
+  artifacts:
+  - tests/distributed/test_checkpoint_slice_materialization.py
+  - tests/distributed/test_target_materialization.py
+  - tests/loading/test_checkpoint_slices.py
+  cost_seconds: 45
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - safetensors
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
