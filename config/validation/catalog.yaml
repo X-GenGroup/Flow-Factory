@@ -15645,3 +15645,25 @@ cases:
     packages: [pytest, torch, accelerate, diffusers, peft]
     environment: {OMP_NUM_THREADS: '1'}
     model_paths: []
+
+- id: torch-training-benchmark-cli
+  covers: [torch.benchmark.cli]
+  facets: [model_runtime]
+  owners: [scripts/benchmark_torch_training.py]
+  command: [python3, scripts/benchmark_torch_training.py, --help]
+  fixture: Argument parsing exits before CUDA setup; this is a CLI smoke check, not performance qualification.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: The public CLI loads and displays its arguments without a CUDA device; measurements remain separate evidence.
+  artifacts: [scripts/benchmark_torch_training.py, src/flow_factory/utils/torch_runtime.py]
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: [torch, diffusers]
+    environment: {CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []

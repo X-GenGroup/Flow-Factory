@@ -12,21 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pathlib import Path
+"""Compare eager/regional compile on a fixed native SD3 BF16 training workload.
 
-import torch
-import torchaudio
-
-from flow_factory.utils.audio import save_audio
-
-
-def test_audio_codec_roundtrip_and_feature_gradients(tmp_path: Path):
-    """Compare eager/regional compile on a fixed native SD3 BF16 training workload.
-
-    This is a one-GPU microbenchmark, not a pretrained or end-to-end throughput claim.
-    Run in each candidate environment with the same GPU and without competing work.
-    """
-
+This is a one-GPU microbenchmark, not a pretrained or end-to-end throughput claim.
+Run in each environment with the same GPU and without competing work."""
 
 import argparse
 import json

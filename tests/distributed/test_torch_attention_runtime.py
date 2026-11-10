@@ -12,17 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pathlib import Path
-
-import torch
-import torchaudio
-
-from flow_factory.utils.audio import save_audio
-
-
-def test_audio_codec_roundtrip_and_feature_gradients(tmp_path: Path):
-    """Native Flux BF16 gradients must remain valid after Torch runtime setup."""
-
+"""Native attention outputs and derivatives remain valid after runtime setup."""
 
 import contextlib
 

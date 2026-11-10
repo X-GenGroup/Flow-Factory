@@ -12,17 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pathlib import Path
-
-import torch
-import torchaudio
-
-from flow_factory.utils.audio import save_audio
-
-
-def test_audio_codec_roundtrip_and_feature_gradients(tmp_path: Path):
-    """Torch compatibility policy is device/version bounded and never runs on import."""
-
+"""Torch compatibility policy is device/version bounded and never runs on import."""
 
 from types import SimpleNamespace
 from unittest.mock import Mock

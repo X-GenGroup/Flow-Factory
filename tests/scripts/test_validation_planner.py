@@ -720,7 +720,9 @@ def test_unknown_cp_owner_remains_an_uncovered_review_obligation(symbol):
         ("\nimport new_backend\n", "<module>"),
     ],
 )
-def test_cp_admission_plus_unknown_definition_or_module_change_fails_visible(addition, unknown):
+def test_cp_admission_keeps_unknown_functions_visible_and_module_contracts_required(
+    addition, unknown
+):
     path = "src/flow_factory/trainers/common/context_parallel.py"
     policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
     before = "def validate_context_parallel_config(config):\n    return False\n"
@@ -730,10 +732,21 @@ def test_cp_admission_plus_unknown_definition_or_module_change_fails_visible(add
     required = planner.infer_requirements(
         {"paths": [path], "facets": [], "scope_complete": True}, policy, {path: symbols}
     )
-    assert f"review.symbol:{path}:{unknown}" in required["obligations"]
     catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
     _, missing = planner.select_cases(catalog, required, [])
-    assert f"review.symbol:{path}:{unknown}" in missing
+    if unknown == "<module>":
+        assert not missing
+        assert {
+            "parallel.cp_contracts",
+            "overlap.cp_admission",
+            "optimization.full_output_backward",
+            "overlap.native.wan.ordered",
+            "overlap.native.wan.tp_ready",
+            "overlap.native.wan.subgroup_ready",
+        } <= set(required["obligations"])
+    else:
+        assert f"review.symbol:{path}:{unknown}" in required["obligations"]
+        assert f"review.symbol:{path}:{unknown}" in missing
 
 
 def test_property_getter_change_keeps_its_state_owner_visible():
@@ -2004,6 +2017,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_sft_fixture.py",
             {
+                "native-attention-runtime",
                 "flux-complete-tp-sft",
                 "flux2-guard-ordered-full",
                 "flux2-klein-dppo-ordered-lora",
@@ -4358,3 +4372,28 @@ def test_evidence_transport_preserves_log_bytes(plan, tmp_path, newline, repeat)
     restored = transport.import_bundle(tmp_path, plan, bundle)
     relative = next(iter(restored["cases"][0]["evidence"]))
     assert (tmp_path / relative).read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        (
+            "src/flow_factory/utils/torch_runtime.py",
+            {"torch-runtime-policy", "native-attention-runtime"},
+        ),
+        ("scripts/benchmark_torch_training.py", {"torch-training-benchmark-cli"}),
+        (
+            "src/flow_factory/loading/backend.py",
+            {"fsdp-checkpoint-replay", "minimax-h3-ref2va-grpo-ordered-full"},
+        ),
+    ],
+)
+def test_torch_compatibility_owners_retain_executable_witnesses(path, expected):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    required = planner.infer_requirements(
+        {"paths": [path], "facets": [], "scope_complete": True}, policy, {}
+    )
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    assert expected <= {row["id"] for row in cases if row["selected"]}
