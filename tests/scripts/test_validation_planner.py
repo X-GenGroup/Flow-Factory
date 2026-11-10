@@ -4319,3 +4319,24 @@ def test_yaml_documentation_proof_preserves_real_configuration_owner_routing(pat
             assert not missing
         else:
             assert f"review.owner:{path}" in missing
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "MANIFEST.in",
+        "docker/docker-cuda/Dockerfile",
+        "scripts/validate_release_artifacts.py",
+        "scripts/check_installed_release.py",
+    ],
+)
+def test_packaging_owners_select_artifact_controls_without_gpu_sweep(path):
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    catalog = yaml.safe_load((ROOT / "config/validation/catalog.yaml").read_text())
+    scope = {"paths": [path], "facets": [], "scope_complete": True}
+    required = planner.infer_requirements(scope, policy, {})
+    cases, missing = planner.select_cases(catalog, required, [])
+    assert not missing
+    selected = [case for case in cases if case["selected"]]
+    assert "release-artifact-contracts" in {case["id"] for case in selected}
+    assert all(case["resources"]["gpus"] == 0 for case in selected)
