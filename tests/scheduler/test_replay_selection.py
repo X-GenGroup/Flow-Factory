@@ -80,6 +80,8 @@ def test_selection_and_storage_do_not_change_noise_or_schedule(cls, dynamics, se
         if expected_states:
             index_map = collector.get_index_map()
             assert [int(index_map[i]) for i in expected_states] == list(range(len(expected_states)))
+        else:
+            assert collector.get_result() is None and collector.get_index_map() is None
 
 
 def parse(algorithm="art", selection="auto", *, training_values=None, **scheduler_values):
