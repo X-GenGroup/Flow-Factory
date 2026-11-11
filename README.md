@@ -26,7 +26,7 @@ All 19 registered model adapters declare TP/SP/CP paths; admission still depends
 variant, algorithm, geometry and backend. This is not a promise that every combination has been
 measured. [Model coverage](guidance/parallelism/models.md) and
 [algorithm coverage](guidance/parallelism/algorithms.md) describe those boundaries.
-EP/DeepEP are [planned for v0.6/v0.7](roadmap/milestones/v0.6-v0.7.md), not current features.
+EP/DeepEP are [planned for v0.7/v0.8](roadmap/milestones/v0.6-v0.7.md), not current features.
 
 # 🔥 News
 
