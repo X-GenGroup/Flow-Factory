@@ -119,7 +119,7 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| ART implementation | [P18](milestones/v0.5x-v0.6.md#p18): rank-local endpoint guidance and two updates | Current additive v0.5.x work |
+| ART implementation | [P18](milestones/v0.5x-v0.6.md#p18): rank-local endpoint guidance and configurable updates | Current additive v0.5.x work |
 | Differentiable reward and ReFL | [P19](milestones/v0.5x-v0.6.md#p19) | Typed input-gradient contract before sharding |
 | Component distribution | [P20](milestones/v0.5x-v0.6.md#p20) | Reuse runtime/loading owners; replicated reference first |
 | DRTune | [P21](milestones/v0.5x-v0.6.md#p21) | Exact selected-step derivative program before optional VJP optimization |

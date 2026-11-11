@@ -63,7 +63,11 @@ Avoid duplicate preparation for shared VAE/text encoder roots across acquisition
 
 ART needs complete endpoint/reward groups but no reward gradient. Restricting the sampler to
 rank-local groups avoids new cross-rank trajectory gathers. Existing source/group/member IDs,
-packed replay order and two optimizer windows remain authoritative.
+packed replay order and shared optimizer geometry remain authoritative. The official/default
+recipe uses FP32 trajectory storage, one inner epoch and two updates; these are recipe settings,
+not algorithm admission restrictions. Ordinary training may configure updates, inner epochs and
+shared reward reduction. Overlap retains the common one-inner-epoch and group-local-statistics
+requirements, preserving complete-group readiness and frozen rollout anchors.
 
 ReFL first establishes a no-grad sampling prefix followed by a selected differentiable prediction,
 clean estimate, decode and reward loss. Record how the flow-matching adaptation differs from the
