@@ -20,6 +20,7 @@ import importlib
 from typing import Dict, Type
 
 from ._base import TrainingArguments
+from .art import ARTTrainingArguments
 from .awm import AWMTrainingArguments
 from .crd import CRDTrainingArguments
 from .dgpo import DGPOTrainingArguments
@@ -43,6 +44,7 @@ _TRAINING_ARGS_REGISTRY: Dict[str, Type[TrainingArguments]] = {
     "grpo-guard": GRPOTrainingArguments,
     "dppo": DPPOTrainingArguments,
     "nft": NFTTrainingArguments,
+    "art": ARTTrainingArguments,
     "awm": AWMTrainingArguments,
     "dgpo": DGPOTrainingArguments,
     "dpo": DPOTrainingArguments,

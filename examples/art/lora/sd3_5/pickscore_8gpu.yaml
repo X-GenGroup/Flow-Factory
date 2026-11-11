@@ -1,0 +1,91 @@
+launcher: accelerate
+config_file: config/accelerate_configs/multi_gpu.yaml
+num_processes: 8
+mixed_precision: fp16
+model:
+  model_type: sd3-5
+  model_name_or_path: stabilityai/stable-diffusion-3.5-medium
+  finetune_type: lora
+  lora_rank: 32
+  lora_alpha: 64
+  target_modules:
+  - attn.add_k_proj
+  - attn.add_q_proj
+  - attn.add_v_proj
+  - attn.to_add_out
+  - attn.to_k
+  - attn.to_out.0
+  - attn.to_q
+  - attn.to_v
+  trainable_parameters_dtype: float32
+  component_load_dtypes:
+    default: float32
+    text_encoder: float16
+    text_encoder_2: float16
+    text_encoder_3: float16
+data:
+  datasets:
+  - name: pickscore
+    dataset_dir: dataset/art_pickscore
+    train:
+      weight: 1
+    eval:
+      num_inference_steps: 40
+      guidance_scale: 1.0
+  sampler_type: rank_local
+  preprocessing_batch_size: 8
+  dataloader_num_workers: 0
+train:
+  trainer_type: art
+  max_epochs: 500
+  resolution: 512
+  num_inference_steps: 10
+  guidance_scale: 1.0
+  group_size: 18
+  unique_sample_num_per_epoch: 64
+  per_device_batch_size: 9
+  gradient_step_per_epoch: 2
+  gradient_accumulation_steps: auto
+  num_inner_epochs: 1
+  enable_gradient_checkpointing: true
+  shuffle_samples: true
+  latent_storage_dtype: float32
+  global_std: false
+  advantage_aggregation: gdpo
+  art_guidance_scale: 1.0
+  art_kl_threshold: 1.0e-05
+  art_reference_noise_level: 0.8
+  ema_decay: 0.0
+  reward_optimization_overlap: false
+  seed: 42
+scheduler:
+  dynamics_type: ODE
+  replay_steps: all
+rewards:
+- name: pick_score
+  reward_model: PickScore
+  device: cuda
+  dtype: float32
+  batch_size: 1
+optimizers:
+- name: default
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  max_grad_norm: 1.0
+  betas:
+  - 0.9
+  - 0.999
+  eps: 1.0e-08
+log:
+  logging_backend: tensorboard
+  save_dir: saves/art-sd35-pickscore-8gpu
+  save_freq: 100
+  save_model_only: false
+  run_name: art-sd35-pickscore-8gpu
+eval:
+  eval_freq: 25
+  num_inference_steps: 40
+  guidance_scale: 1.0
+  resolution: 512
+  per_device_batch_size: 9
+  seed: 42

@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from ._base import TrainingArguments, _standardize_clip_range, require_config_bool
+
+if TYPE_CHECKING:
+    from ..args import Arguments
 
 
 @dataclass
@@ -109,8 +112,14 @@ class DPPOTrainingArguments(TrainingArguments):
                 f"expected kl_mask_type in ('v-based', 'x-based'), got {self.kl_mask_type!r}"
             )
 
+    def validate_configuration(self, args: Arguments) -> None:
+        """Require nonempty stochastic replay before allocating training resources."""
+        args.scheduler_args.validate_replay_selection(
+            self.num_inference_steps, require_stochastic=True
+        )
+
     def get_num_train_timesteps(self, args: Any) -> int:
-        return args.scheduler_args.num_sde_steps
+        return args.scheduler_args.get_num_replay_steps(self.num_inference_steps)
 
     def get_preprocess_guidance_scale(self) -> float:
         """Ensure negative prompts are encoded when the KL-ref branch needs CFG."""

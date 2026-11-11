@@ -34,6 +34,7 @@ from .parallelism_args import ParallelismArguments
 from .reward_args import MultiRewardArguments, RewardArguments
 from .scheduler_args import SchedulerArguments
 from .training_args import (
+    ARTTrainingArguments,
     AWMTrainingArguments,
     CRDTrainingArguments,
     DGPOTrainingArguments,

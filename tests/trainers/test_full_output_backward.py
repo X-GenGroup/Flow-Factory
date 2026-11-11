@@ -171,6 +171,59 @@ def _r1_trainer():
     return trainer, samples, tuple(bundle.parameters())
 
 
+def _art_trainer():
+    """Exercise the production ART group/replay/optimizer path with a scalar policy."""
+    from flow_factory.hparams import ARTTrainingArguments
+    from flow_factory.samples import BaseSample, LatentState
+
+    cls = get_trainer_class("art")
+    trainer = object.__new__(cls)
+    weight = torch.nn.Parameter(torch.tensor(0.1))
+    trainer.model_bundle = torch.nn.ParameterList([weight])
+    trainer.accelerator = Accelerator(cpu=True, gradient_accumulation_steps=1)
+    trainer.training_args = ARTTrainingArguments(
+        unique_sample_num_per_epoch=1,
+        group_size=2,
+        num_inference_steps=1,
+        gradient_accumulation_steps=1,
+        shuffle_samples=False,
+    )
+    trainer.training_args.num_batches_per_epoch = 2
+    trainer.autocast = nullcontext
+    trainer.accumulate_gradients = lambda: trainer.accelerator.accumulate(trainer.model_bundle)
+    trainer._iter_prefetched_batches = lambda samples, size: (
+        BaseSample.stack([s]) for s in samples
+    )
+    state = LatentState({"latent": torch.ones(1, 2)})
+    replay = SimpleNamespace(
+        state=state,
+        next_state=state,
+        times=SimpleNamespace(timestep={"latent": torch.tensor([500.0])}),
+    )
+    trainer.adapter = SimpleNamespace(
+        trajectory_component_order=("latent",),
+        get_train_step_indices=lambda: torch.tensor([0]),
+        train=lambda: None,
+        get_terminal_state=lambda batch: LatentState({"latent": batch["all_latents"][:, -1]}),
+        get_replay_step=lambda batch, i: replay,
+        get_replay_callback=lambda batch, i, field: LatentState({"latent": torch.zeros(1, 2)}),
+        forward_state=lambda **kwargs: SimpleNamespace(
+            velocity=LatentState({"latent": weight.expand(1, 2)}),
+            dt={"latent": torch.tensor([-0.5])},
+        ),
+    )
+    samples = [
+        BaseSample(
+            all_latents=torch.tensor([[0.0, 0.0], [float(sign), float(sign * 2)]]),
+            sampling_group_id=0,
+            sampling_group_member_id=i,
+            extra_kwargs={"advantage": torch.tensor(float(sign))},
+        )
+        for i, sign in enumerate((-1, 1))
+    ]
+    return trainer, samples, (weight,)
+
+
 def _case(name, monkeypatch):
     """Build real objective entry points; new registry entries must supply a case."""
     metrics = defaultdict(list)
@@ -186,6 +239,8 @@ def _case(name, monkeypatch):
         return trainer, (adapter.policy_weight,), run, metrics, 1
     if name in {"grpo", "grpo-guard", "dppo", "nft", "awm", "dpo"}:
         trainer, samples, parameters = _online_trainer(name, monkeypatch)
+    elif name == "art":
+        trainer, samples, parameters = _art_trainer()
     elif name in {"dgpo", "crd"}:
         adapter = grouped._adapter()
         factory = grouped._dgpo_trainer if name == "dgpo" else grouped._crd_trainer

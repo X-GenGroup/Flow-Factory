@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal, Mapping, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Mapping, Optional, Tuple, Union
 
 import yaml
 
@@ -38,6 +38,9 @@ from ..gradient_checkpointing import (
     normalize_gradient_checkpointing_policy,
     serialize_gradient_checkpointing_policy,
 )
+
+if TYPE_CHECKING:
+    from ..args import Arguments
 
 logger = setup_logger(__name__, rank_zero_only=True)
 
@@ -523,10 +526,23 @@ class TrainingArguments(ArgABC):
         """
         return max(1, num_batches_per_epoch // self.gradient_step_per_epoch)
 
-    def get_num_train_timesteps(self, args: Any) -> int:
-        """Return the gradient accumulation multiplier for per-timestep losses.
+    def validate_configuration(self, args: Arguments) -> None:
+        """Validate algorithm requirements against normalized sibling configuration.
 
-        Subclasses override this to provide algorithm-specific values.
+        Called after scheduler and sampler resolution, regardless of whether
+        gradient accumulation is automatic, before runtime allocation.
+        Subclasses use this hook for requirements that need more than training arguments.
+
+        Args:
+            args: The resolved parent configuration.
+        """
+
+    def get_num_train_timesteps(self, args: Any) -> int:
+        """Derive the number of backward terms per optimizer microbatch.
+
+        This is a pure count used by accumulation and reward-tile geometry;
+        cross-configuration admission belongs in ``validate_configuration``.
+        Offline Monte Carlo timesteps averaged inside one backward still count as one.
         The `args` parameter is the parent `Arguments` object, giving access
         to sibling config groups like `scheduler_args` if needed.
         """

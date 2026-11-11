@@ -9,6 +9,62 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/contracts/replay.py, src/flow_factory/hparams/scheduler_args.py]
+    requires: [scheduler.replay.contracts, scheduler.replay.coupled]
+    reason: Actual transition selection owns retention and loss count, independently of noise and endpoint re-noising.
+  - paths: [src/flow_factory/hparams/args.py]
+    symbols: ['<module>', Arguments.__post_init__]
+    requires: [repository.consistency, execution.contracts, scheduler.replay.contracts, scheduler.replay.coupled]
+    reason: Configuration composition and shared replay validation need registry/config controls plus a prepared subset consumer.
+  - paths: [src/flow_factory/hparams/training_args/_base.py]
+    symbols: ['<module>', TrainingArguments.validate_configuration, TrainingArguments.get_num_train_timesteps]
+    requires: [execution.contracts, scheduler.replay.contracts]
+    reason: The default validation hook and backward-term count preserve all registered argument classes; algorithm overrides own replay requirements.
+  - paths: [src/flow_factory/hparams/training_args/grpo.py, src/flow_factory/hparams/training_args/dppo.py]
+    symbols: ['<module>', '*.get_num_train_timesteps', '*.validate_configuration']
+    requires: [scheduler.replay.contracts, scheduler.replay.coupled]
+    reason: Likelihood term counts must match retained stochastic transitions and actual accumulation.
+  - paths: [src/flow_factory/trainers/rl/grpo.py]
+    symbols: [GRPOTrainer.__init__]
+    requires: [scheduler.replay.contracts, scheduler.replay.coupled]
+    reason: Removing constructor count caches preserves shared GRPO/Guard/DPPO configuration and actual replay indices.
+  - paths: [src/flow_factory/scheduler/abc.py, src/flow_factory/scheduler/flow_match_euler_discrete.py,
+            src/flow_factory/scheduler/unipc_multistep.py, src/flow_factory/scheduler/minimax_h3.py]
+    symbols: ['<module>', SDESchedulerMixin, '*.train_timesteps', '*.set_replay_steps', '*.__init__']
+    requires: [scheduler.replay.contracts, scheduler.replay.coupled, algorithm.art.flux_lifecycle, algorithm.art.av_stream]
+    reason: Shared selection must preserve all registered schedule/noise producers, component alignment and both replay objectives; numerical step kernels remain separate owners.
+  - paths: [src/flow_factory/scheduler/loader.py]
+    symbols: [load_scheduler]
+    requires: [scheduler.replay.contracts, scheduler.replay.coupled, algorithm.art.av_stream]
+    reason: Scheduler loading binds the generic replay contract for every registered family without modifying native solver config.
+  - paths: [src/flow_factory/utils/trajectory_collector.py]
+    symbols: [compute_trajectory_indices]
+    requires: [scheduler.replay.contracts, scheduler.replay.coupled, algorithm.art.av_stream]
+    reason: Minimal state retention must include each selected transition endpoint and an independently required terminal state.
+  - paths: [src/flow_factory/hparams/__init__.py,
+            src/flow_factory/hparams/training_args/__init__.py,
+            src/flow_factory/hparams/training_args/_registry.py,
+            src/flow_factory/trainers/registry.py]
+    symbols: ['<module>']
+    requires: [repository.consistency, execution.contracts, optimization.full_output_backward]
+    reason: Registration/export declarations must agree across all resolved trainers and arguments;
+      changed resolver functions remain separate unmapped owners requiring review.
+  - paths: [examples/art/**]
+    requires: [repository.consistency, algorithm.art.contracts]
+    reason: Parse the user ART recipe through production arguments and verify its logical update geometry.
+  - paths:
+    - src/flow_factory/trainers/rl/art.py
+    - src/flow_factory/trainers/rl/art_objective.py
+    - src/flow_factory/hparams/training_args/art.py
+    requires:
+    - algorithm.art.contracts
+    - algorithm.art.flux_lifecycle
+    - algorithm.art.wan_composition
+    - algorithm.art.av_stream
+    - execution.contracts
+    - optimization.full_output_backward
+    reason: ART consumes planned ODE callbacks and complete local groups across configurable optimizer windows; qualify
+      image continuation and video TP/SP/CP without repeating other algorithms.
   - paths: [src/flow_factory/models/parallelism/autocast.py]
     requires: [precision.cp_autocast.cpu, precision.cp_autocast.cuda, precision.norm_autocast,
                parallel.norm_precision, checkpoint.cp_state.tp1, model.flux.sequence_lifecycle,
@@ -1312,6 +1368,18 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths: [src/flow_factory/trainers/rl/grpo.py]
+    symbols: [GRPOTrainer.__init__, GRPOTrainer.training_args]
+    requires: [execution.contracts, scheduler.replay.contracts, scheduler.replay.coupled]
+    reason: Constructor cache removal and training-argument type declarations are covered by coupled CPU objectives and a real FSDP2 subset consumer; rollout and loss methods keep their broader routes.
+  - paths: [src/flow_factory/models/minimax_h3/workflow.py]
+    symbols: [build_h3_scheduler]
+    requires: [scheduler.replay.contracts, algorithm.art.av_stream]
+    reason: The H3 factory must bind replay selection symmetrically to video/audio; schedule, input processing and other workflow symbols retain their native routes.
+  - paths: [src/flow_factory/hparams/training_args/opd.py]
+    symbols: [DiffusionOPDTrainingArguments.timestep_range]
+    requires: [algorithm.opd.contracts]
+    reason: OPD argument declarations retain their config/band/loss-count controls; trainer execution and teacher routing own the native lifecycle requirements.
   - paths: [tests/distributed/attention_precision_reference.py]
     symbols: [attention_vjp_reference]
     requires: [precision.compute, precision.wan_sft, parallel.cp_sft]
