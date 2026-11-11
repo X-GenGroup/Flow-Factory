@@ -1,14 +1,17 @@
 # Configure a parallel layout
 
 Choose a model and algorithm, then enable a layout admitted by both. These snippets are overrides
-for an otherwise complete training configuration.
+for an otherwise complete training configuration. The [quickstart](quickstart.md) assembles
+complete YAMLs and launch commands from a checked-in SFT recipe.
 
 ## Choose the GPU geometry
 
 Use the [FSDP2 launcher configuration](../../config/accelerate_configs/fsdp2.yaml) for TP or CP.
 FSDP2 requires `dp_shard_size >= 2`; CP additionally requires `dp_replicate_size: 1`.
-The examples below use one replicated-DP coordinate. Disable FSDP CPU-efficient loading for
-either TP or CP.
+The examples below use one replicated-DP coordinate. CP currently requires FSDP
+CPU-RAM-efficient loading to be disabled. TP without CP can compose with it on the qualified
+[sharded target-loading path](../configuration/loading-and-resume.md); do not apply the old
+replicated-loading restriction to every TP run.
 
 | Launched GPUs | Configuration | Logical data replicas |
 |---:|---|---:|
@@ -84,11 +87,11 @@ Use only the canonical target components declared by the adapter. Some models ha
 scheduled denoisers or a distinct reference target; replacing these with a generic `transformer`
 assumption can change which component trains.
 
-The measured dependency lines are Torch 2.10/2.11, Accelerate 1.15 and Diffusers 0.42.
+Latest main has targeted qualification on Torch 2.10–2.14, Accelerate 1.15 and Diffusers 0.42.
+See [exact versions and evidence](../../docs/development/validation/torch210-214.md); the published
+v0.5.0 image retains its Torch 2.10 environment.
 Unmeasured versions above the required API floors warn and continue; this does not weaken
-model, topology, precision or lifecycle checks. Optional
-model-specific development revisions require their declared version and commit. See the
-[model contracts](models.md) for those pins and optional packages.
+model, topology, precision or lifecycle checks. See the [model contracts](models.md) for optional packages and layout-specific requirements.
 
 ## Check geometry and state
 

@@ -18,15 +18,15 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-Useful starting contributions include a missing objective qualification in [P11](milestones/v0.5.md#p11),
-a concrete model layout in [P12](milestones/v0.5.md#p12), or a semantic test-selection regression.
-A contribution does not need to implement an entire milestone or access a large GPU cluster.
-Main contains P01a-P01c, P02-P08 and the completed CP stack #291 through #306. The next closure
-work starts from latest main in a new native Stack PR chain. Inspect the current
-[handoff](handoffs/v0.5-gpu-handoff.md) and [owner inventory](milestones/v0.5.md#closure-inventory)
-before selecting the actual prerequisite branch for dependent work. Read [the baseline](milestones/v0.2.md)
-before carrying an old TP finding or campaign result into a new task. Preserve P00-P16 and the
-P01 child IDs; P17 is the new final v1.0 qualification item.
+Current entry points are [P15a user guidance](milestones/v0.6-v0.7.md#p15a),
+[P15b model admission](milestones/v0.6-v0.7.md#p15b), and focused test-selection improvements.
+P01–P14 are complete and v0.5.0 is published. Start from latest main; historical P11/P12 handoffs
+retain evidence, not an instruction to rerun or reopen their completed stacks. A concrete new
+model layout still needs its own admission and evidence.
+
+A contribution need not implement an entire milestone or require a large GPU cluster. Preserve
+P00–P17 and existing child IDs. P15a–P15f and P16a–P16c split the upcoming milestones into coherent
+PRs; the milestone pages own their status and dependency links.
 
 ## Status and ownership
 

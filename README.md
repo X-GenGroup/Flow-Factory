@@ -7,7 +7,35 @@
   <b>Unified Online RL and Offline Fine-Tuning for Diffusion and Flow-Matching Models</b>
 </p>
 
+# Capabilities at a glance
+
+Train image, editing, video and joint audio-video models through one configuration interface.
+Choose an objective and a model first, then a compatible tuning method and GPU layout.
+
+| Choose | Available paths | Start here |
+|---|---|---|
+| Model and modality | SD3.5, FLUX, Qwen Image, Z-Image, Wan, LTX-2, Bagel, SenseNova and MiniMax H3 families | [Model catalog](#-supported-models) |
+| Training paradigm | Offline demonstrations/preferences, online reward optimization, and distillation | [Feature overview](guidance/overview.md) |
+| Algorithm | 14 registered trainers, including SFT, DPO, GRPO/Guard, DPPO, NFT and multi-role distillation | [Algorithm catalog](#-supported-algorithms) |
+| Tuning | Full weights or LoRA, within the selected algorithm/model contract | [Algorithm guide](guidance/training/algorithms.md) |
+| Training backend | DDP, DeepSpeed ZeRO-2 and FSDP2 | [Choose a backend](guidance/overview.md#choose-a-training-backend) |
+| Parallel layout | Model-owned TP/SP and Ulysses CP, composed with FSDP2 | [4/4/8-GPU quickstart](guidance/parallelism/quickstart.md) |
+| Feedback and state | Async reward/optimization overlap, reference/EMA state, fixed-topology resume | [Workflow](guidance/training/workflow.md) · [Resume](guidance/configuration/loading-and-resume.md) |
+
+All 19 registered model adapters declare TP/SP/CP paths; admission still depends on the exact
+variant, algorithm, geometry and backend. This is not a promise that every combination has been
+measured. [Model coverage](guidance/parallelism/models.md) and
+[algorithm coverage](guidance/parallelism/algorithms.md) describe those boundaries.
+EP/DeepEP are [planned for v0.6/v0.7](roadmap/milestones/v0.6-v0.7.md), not current features.
+
 # 🔥 News
+
+* **[2026-11-10]** **TP/SP/CP and v0.5.0**: use the
+  [parallel quickstart](guidance/parallelism/quickstart.md) to choose a 4- or 8-GPU layout.
+  The [published release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0)
+  provides a fixed Torch 2.10 environment. Latest `main` additionally has targeted
+  [Torch 2.10–2.14 qualification](docs/development/validation/torch210-214.md);
+  source updates do not change the published image.
 
 * **[2026-10-17]** **Prompt enhancement** as a separate step! `ff-prompt-enhance` rewrites a
   dataset's prompts with a model's prompt enhancer (FLUX.3 pup, FLUX.2, LTX-2, the Qwen-Image-2.1
@@ -48,6 +76,8 @@ acceleration:
 
 # 📕 Table of Contents
 
+- [Capabilities at a glance](#capabilities-at-a-glance)
+- [Parallel Training](#parallel-training)
 - [Supported Models](#-supported-models)
 - [Supported Algorithms](#-supported-algorithms)
 - [Get Started](#-get-started)
@@ -140,6 +170,26 @@ See the [Algorithm guide](guidance/training/algorithms.md) for objectives and co
 
 Models and algorithms are decoupled at the framework interface. Ready-to-run recipes are indexed in
 [`examples/README.md`](examples/README.md).
+
+# Parallel Training
+
+Use FSDP2 for the declared TP/CP training paths. TP distributes model matrix work, SP retains
+selected activations as token shards over the TP group, and CP divides a sample's context.
+SP requires TP and adds no extra GPU dimension. Set `sequence_parallel` explicitly: it defaults
+on for SD3.5/Wan T2V under TP and off for the other adapters.
+
+| Local GPUs | Layout | Independent data replicas |
+|---:|---|---:|
+| 4 | FSDP2 DP2 × TP2, SP on | 2 |
+| 4 | FSDP2 DP2 × CP2 | 2 |
+| 8 | FSDP2 DP2 × TP2 × CP2, SP on | 2 |
+
+The [quickstart](guidance/parallelism/quickstart.md) generates complete SD3.5 SFT configurations
+and gives the launch commands. CP currently requires CUDA/NCCL, BF16, AdamW, one example per
+device and native attention. For other models, check head/token geometry and model-specific
+precision requirements before launching. Read the [configuration guide](guidance/parallelism/configuration.md)
+for loading, accumulation and resume rules, and [costs and benefits](guidance/parallelism/performance.md)
+for what each strategy can save.
 
 # 🚀 Get Started
 

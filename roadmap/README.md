@@ -1,27 +1,23 @@
 # Flow-Factory roadmap
 
-The v0.5 implementation is integrated on main through `bbbdd990` (2026-11-10). P01–P12,
-including the 14-trainer and 19-model TP/SP/Ulysses-CP inventory, SP completion, shared parallelism
-owners and P12j sharded target loading, are merged. DMD2 orchestration #304 is also merged.
-The original [algorithm](handoffs/v0.5-algorithm-closure.md),
-[model](handoffs/v0.5-model-closure.md) and [SP](handoffs/v0.5-sp-completion.md) handoffs retain
-qualification source identities and historical failures; they are not a second current task list.
+Latest reviewed baseline: main `d1b2acde` (2026-11-11), including Torch precision PR #375.
+P01–P14 are merged and [v0.5.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0).
+The 19-model / 14-trainer TP/SP/Ulysses-CP inventory, SP completion, shared parallelism owners,
+P12j sharded loading and P13a evidence continuity remain the implemented foundation. Historical
+[algorithm](handoffs/v0.5-algorithm-closure.md), [model](handoffs/v0.5-model-closure.md) and
+[SP](handoffs/v0.5-sp-completion.md) handoffs retain original evidence identities, not current tasks.
 
-P13a (#369) carries authenticated accepted PR evidence through source-equivalent merge trees.
-Main's [quality and CPU gates](https://github.com/X-GenGroup/Flow-Factory/actions/runs/42768746723)
-passed after that merge. This is evidence continuity, not a claim that historical GPU runs were
-executed again on main. Fresh CPU gates and source-delta checks remain mandatory.
+The active next step is [P15a](milestones/v0.6-v0.7.md#p15a): make existing capabilities discoverable
+through README and complete parallel-training instructions. Then P15b–P15f admit DiT-MoE, establish
+an EP=1 reference, implement NCCL expert dispatch and qualify training/state integration for v0.6.
+[P16](milestones/v0.6-v0.7.md#p16) adds an optional, version-qualified DeepEP transport for v0.7.
+[P17](milestones/v1.0.md#p17) remains the final v1.0 stabilization boundary.
 
-The remaining sequence is P13b guidance/migration reconciliation, P13c installation and built-artifact
-qualification, then P14 version metadata and release delivery. See the
-[release acceptance](../docs/release/v0.5.md) and [milestone](milestones/v0.5.md#p13).
-Use independent worktrees and native Stack PRs; the user reviews and merges. Targeted local GPU
-checks cover actual integration gaps within eight GPUs. A Cartesian model/backend campaign,
-cross-node tests and reward-latency/throughput claims are not additional gates.
-
-Expert parallelism remains future work in P15/P16. Version 1.0 is the final stabilization boundary
-for that declared scope; development checkpoints advance from the existing v0.1.0 through v0.2.0
-and later 0.x versions.
+Use independent worktrees and native Stack PRs when work is dependent; the user reviews and merges.
+Reuse valid GPU receipts at their original sources. Changed contracts select targeted local jobs
+within eight GPUs, not a Cartesian matrix, cross-node campaign or fixed reward deployment.
+Publication of v0.5.0 and the source-only v0.5.1 tag does not publish the later #375 source as an
+image or a new release. See [installation identities](../guidance/installation.md).
 
 This directory records planned work, dependencies, acceptance criteria, and contribution entry
 points. It does not declare a feature supported or replace the current development rules in
@@ -37,6 +33,7 @@ listed implementation and acceptance evidence.
 | Find a release or work item | The release table below and its linked milestone |
 | Claim work, hand it off, or update its status | [Contributing to the roadmap](CONTRIBUTING.md) |
 | Understand ownership and upstream reuse | [Architecture direction](design/architecture.md) |
+| Plan EP model admission, ownership and upstream reuse | [EP design checkpoint](design/expert-parallelism.md) |
 | Plan pre-commit hooks, CI and consistency checks | [Developer automation](design/automation.md) |
 | Understand the proposed risk and GPU evidence model | [Validation design](design/validation.md) |
 | Implement an extension using today's API | [Development guide](../AGENTS.md) and [model guide](../docs/development/new-model.md) |
@@ -51,8 +48,9 @@ the milestone files.
 
 ## Release sequence
 
-The v0.2 source checkpoint records already-merged code and its existing evidence. Later rows are
-planned release checkpoints without calendar commitments. Tag each future integration commit only
+The table preserves historical acceptance boundaries as well as future releases. Stable tags
+through v0.5.1 exist; the alpha/beta/RC rows were planning checkpoints, not published tags.
+Future rows carry no calendar commitments. Tag each future integration commit only
 after its work, version metadata and required evidence are complete. The earlier v1.x/v2.x plan
 was never published as tags and is superseded by this sequence; preserve the actual v0.1.0 tag.
 
@@ -66,31 +64,31 @@ was never published as tags and is superseded by this sequence; preserve the act
 | [v0.5.0-beta.1](milestones/v0.5.md#p12) | P11-P12 | Algorithm/state, eval/overlap/resume and registry coverage disposition complete; scope frozen |
 | [v0.5.0-rc.1](milestones/v0.5.md#p13) | P13 | Migration, dependency compatibility, examples, and release evidence complete |
 | [v0.5.0](milestones/v0.5.md#p14) | P14 | Qualified TP/CP/TP+CP model-algorithm coverage, eval, overlap and state continuation |
+| `v0.5.1` | Torch 2.10/2.11 compatibility after #374 | Published source-only patch tag; no Release or image |
 | [v0.6.0](milestones/v0.6-v0.7.md#p15) | P15 | One real MoE model with a correct NCCL EP implementation |
 | [v0.7.0](milestones/v0.6-v0.7.md#p16) | P16 | Optional DeepEP transport with a validated NCCL fallback |
 | [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
 
-[P01a](milestones/v0.3.md#p01a) supplies the merged hooks and basic CPU CI; P01b supplies the merged
-manual selection policy and P01c supplies merged consistency checks. P01b/P02 provide a usable manually selected gate before P04
-automates selection. P03 qualifies the merged TP/SP implementation; do not reopen #270 or rebuild
-its plans. P03 and P04 can progress independently after those prerequisites. The CP
-feasibility probe starts during P06; it need not wait for all runtime cleanup. Production CP
-releases build on the completed v0.4 baseline.
+P01a supplied hooks/basic CPU CI, P01b the manual evidence policy, P01c consistency checks and
+P04 automatic selection. P03 qualified initial TP/SP; the v0.4 ownership work then supported
+CP integration. Those dependencies are complete; preserve their runtime contracts and evidence
+rather than reopening the original work items.
 
 P02 #281, P03 #282, P04 #283, P05 #285, P06 #286, P07 #287 and P08 #288 are merged.
 Tags `v0.3.0` and `v0.4.0` already point to `17e8be7c` and `fbb038e3`, respectively.
 Their package metadata is `0.3.0` and `0.4.0`. Do not move or recreate those tags.
-GitHub Release pages currently exist for v0.1.0 and v0.2.0; a tag and a Release page are separate
-artifacts. Historical release-page backfill is optional and does not block v0.5.
+GitHub Release pages exist for v0.1.0, v0.2.0 and v0.5.0. A tag and a Release page are separate
+artifacts; v0.5.1 is source-only. Historical release-page backfill is optional.
 
 ## Starting evidence
 
-Last checked: **2026-11-10**, main `bbbdd990`. No v0.5 tag or Release has been published.
-Alpha/beta/RC rows above describe acceptance boundaries, not existing tags. They need not be
-retroactively published to deliver the stable release.
+Last checked: **2026-11-11**, main `d1b2acde`. See the
+[v0.5 release records](milestones/v0.5.md#release-records) for immutable tag targets and the
+post-release Torch qualifications. Alpha/beta/RC rows describe acceptance boundaries, not
+published historical tags; do not manufacture those tags retroactively.
 Detailed limitations, evidence provenance and source-tag metadata are recorded in [the v0.2 baseline](milestones/v0.2.md).
 
-- The previous GitHub release is `v0.1.0`; its tag points to
+- The original `v0.1.0` release tag points to
   [`5ab10a9f`](https://github.com/X-GenGroup/Flow-Factory/commit/5ab10a9f4d36b9271865903aca1fa3c28afe11cb).
   The package metadata at the v0.2 source checkpoint still says `0.1.0`; a source tag does not
   publish or relabel a package artifact.
@@ -117,10 +115,10 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| Guidance and migration | [P13b](milestones/v0.5.md#p13b): reconcile current behavior and historical evidence | Preserve receipt identities; do not relabel historical environments |
-| Installation and artifacts | [P13c](milestones/v0.5.md#p13c): install built artifacts and check the qualified environment | Reuse valid owner evidence; add tests only for uncovered integration risks |
-| Release delivery | [P14](milestones/v0.5.md#p14): version, notes, packages, image and durable evidence | User merges the reviewed stack before stable tag/image publication |
-| Evidence continuity | [P13a](milestones/v0.5.md#p13a) is merged in #369 | Fresh CPU checks plus authenticated source-equivalent PR receipts |
+| User-facing capability guide | [P15a](milestones/v0.6-v0.7.md#p15a): README, TP/SP/CP recipes and current status | Documentation/CPU checks; preserve existing GPU identities |
+| EP model admission | [P15b](milestones/v0.6-v0.7.md#p15b): pin DiT-MoE semantics and upstream reference | Resolve conditioning, auxiliary objective and expert ownership before EP runtime |
+| NCCL EP integration | [P15c–P15f](milestones/v0.6-v0.7.md#p15c) | EP=1 reference, dispatch, FSDP/state, then online/offline integration |
+| Optional DeepEP | [P16a](milestones/v0.6-v0.7.md#p16a): qualify a hardware/toolchain/API tuple | NCCL reference stays supported; no mid-collective fallback |
 
 ## Scope of v1.0
 
