@@ -633,8 +633,9 @@ class LogVideo:
         os.unlink(probe_path)
         max_stride = max(1, math.floor(self.fps / min_fps))
         attempt = None
+        target = max_bytes
         for _ in range(_FIT_MAX_ATTEMPTS):
-            budget_units = max_bytes / bytes_per_unit
+            budget_units = target / bytes_per_unit
             stride = min(max_stride, max(1, math.ceil(frames * src_h * src_w / budget_units)))
             kept = math.ceil(frames / stride)
             area = min(1.0, budget_units / (kept * src_h * src_w))
@@ -654,6 +655,9 @@ class LogVideo:
                 return path
             os.unlink(path)
             bytes_per_unit = size / (kept * out_h * out_w)
+            # Encoded bytes per pixel grow as a clip shrinks, so aiming at the limit itself
+            # approaches it from above; undershoot by the observed overshoot instead.
+            target *= max_bytes / size
         logger.warning(
             f"Skipping video {self.caption!r}: no {format} encoding of {frames}x{src_h}x{src_w} "
             f"@ {self.fps} fps fits {max_bytes} bytes with fps >= {min_fps} and short side >= "

@@ -189,6 +189,31 @@ def test_fitting_resizes_only_after_reaching_the_frame_rate_floor():
     clip.cleanup()
 
 
+def test_fitting_converges_when_bytes_per_pixel_grow_as_the_clip_shrinks(monkeypatch, tmp_path):
+    """Model GIF frame differencing: subsampled frames cost more and area is sublinear.
+
+    The probe runs at stride 1, so a stride-3 attempt overshoots; recalibrating towards the
+    limit itself then approaches it from above (the 124x480x864 H3 clip that was skipped).
+    """
+    clip = LogVideo(np.zeros((124, 480, 864, 3), dtype=np.uint8), fps=24)
+    writes = []
+
+    def fake_write(arr, fps, format, *, with_audio):
+        frames, height, width = arr.shape[:3]
+        stride = 1 if frames <= 8 else round(124 / frames)
+        size = int(0.66 * frames * (height * width) ** 0.9 * (480 * 864) ** 0.1 * stride**0.3)
+        path = tmp_path / f"{len(writes)}.{format}"
+        path.write_bytes(b"\0" * size)
+        writes.append(size)
+        return str(path)
+
+    monkeypatch.setattr(clip, "_write", fake_write)
+    budget = 10 * 1024**2
+    fitted = clip.get_fitted_value("gif", budget, min_fps=8, min_side=128)
+    assert fitted is not None and writes[-1] <= budget
+    assert len(writes) <= 1 + 3  # probe plus at most _FIT_MAX_ATTEMPTS encodings
+
+
 def test_fitting_skips_a_video_that_cannot_meet_the_floors(monkeypatch):
     warnings = []
     monkeypatch.setattr("flow_factory.logger.formatting.logger.warning", warnings.append)
