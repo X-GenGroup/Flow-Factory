@@ -1,5 +1,8 @@
 # EP design checkpoint
 
+NCCL EP now targets v0.7 and optional DeepEP v0.8, after
+[ART, differentiable rewards and component execution](../milestones/v0.5x-v0.6.md).
+
 This is planning for [P15/P16](../milestones/v0.6-v0.7.md), not an implemented EP API. Reviewed
 2026-11-11. Keep existing typed runtime, algorithm, loading and state owners; add the smallest
 model/expert boundaries required by a real admitted model. Do not introduce another trainer or

@@ -18,15 +18,17 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-Current entry points are [P15a user guidance](milestones/v0.6-v0.7.md#p15a),
-[P15b model admission](milestones/v0.6-v0.7.md#p15b), and focused test-selection improvements.
+The next development entry is [P19a differentiable feedback](milestones/v0.5x-v0.6.md#p19a),
+followed by ReFL, component execution policies and DRTune. P15a and P18 ART are merged;
+[P18 experiment/publication follow-through](milestones/v0.5x-v0.6.md#p18) is separate.
+[P15b EP model admission](milestones/v0.6-v0.7.md#p15b) remains deferred until P21 qualification.
 P01–P14 are complete and v0.5.0 is published. Start from latest main; historical P11/P12 handoffs
 retain evidence, not an instruction to rerun or reopen their completed stacks. A concrete new
 model layout still needs its own admission and evidence.
 
 A contribution need not implement an entire milestone or require a large GPU cluster. Preserve
-P00–P17 and existing child IDs. P15a–P15f and P16a–P16c split the upcoming milestones into coherent
-PRs; the milestone pages own their status and dependency links.
+P00–P21 and existing child IDs. P19–P21 split the next algorithm/component work into coherent
+PRs; P15/P16 retain the deferred EP work; the milestone pages own their status and dependency links.
 
 ## Status and ownership
 
