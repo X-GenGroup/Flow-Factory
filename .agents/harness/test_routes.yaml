@@ -97,6 +97,8 @@ facets:
       - tests/data_utils/test_offline_dataset.py
   trajectory:
     tests:
+      - tests/scheduler/test_replay_selection.py
+      - tests/distributed/test_replay_selection.py
       - tests/models/trajectory
       - tests/samples/test_structured_trajectory.py
   model_adapter:

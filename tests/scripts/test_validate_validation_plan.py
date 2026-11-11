@@ -279,11 +279,14 @@ def test_cp_state_capability_requires_real_sharded_numerical_evidence(plan, tp):
 
 
 @pytest.mark.parametrize(
-    "trainer,reward", [("grpo", "varying"), ("dmd2", "none"), ("nft", "varying")]
+    "trainer,reward",
+    [("grpo", "varying"), ("dmd2", "none"), ("nft", "varying"), ("art", "varying")],
 )
 def test_cp_online_capability_enforces_its_feedback_contract(plan, trainer, reward):
     case = _model_probe(plan)
     case.update(execution_scope="runtime", execution_capability=f"wan-{trainer}-cp-v1")
+    if trainer == "art":
+        case["topology"].update(tp=2, ranks_per_node=8)
     case["oracle"].update(kind="numerical", reward=reward)
     validator.validate_plan(plan)
     case["oracle"]["reward"] = "none" if reward == "varying" else "varying"

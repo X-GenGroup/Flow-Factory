@@ -132,7 +132,7 @@ class DiffusionOPDTrainingArguments(TrainingArguments):
                 "1000->0. A float ``f`` means the band ``[0, f]`` (the first ``f``-fraction of "
                 "steps, skipping the near-clean tail); a tuple is an explicit ``[lo, hi]`` band. "
                 "Default 0.99 matches upstream DiffusionOPD's ``timestep_fraction``. "
-                "Dynamics-agnostic (does not use the SDE-only ``scheduler.train_timesteps``)."
+                "Dynamics-agnostic (does not use ``scheduler.replay_steps``)."
             )
         },
     )

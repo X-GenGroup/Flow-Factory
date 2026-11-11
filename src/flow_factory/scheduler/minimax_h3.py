@@ -23,6 +23,7 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
 from diffusers.utils.torch_utils import randn_tensor
 
+from ..contracts.replay import ReplaySteps
 from ..utils.base import to_broadcast_tensor
 from ..utils.noise_schedule import flow_match_sigma
 from .abc import SDESchedulerMixin, SDESchedulerOutput
@@ -47,6 +48,8 @@ class MiniMaxH3SDEScheduler(SchedulerMixin, ConfigMixin, SDESchedulerMixin):
 
     _compatibles: List[str] = []
     order = 1
+    # Retention is serialized by SchedulerArguments, not the native solver config.
+    ignore_for_config = ["replay_steps"]
 
     @register_to_config
     def __init__(
@@ -57,6 +60,7 @@ class MiniMaxH3SDEScheduler(SchedulerMixin, ConfigMixin, SDESchedulerMixin):
         num_sde_steps: Optional[int] = None,
         seed: int = 42,
         dynamics_type: Literal["Flow-SDE", "Dance-SDE", "CPS", "ODE"] = "Flow-SDE",
+        replay_steps: ReplaySteps = "auto",
     ) -> None:
         """Initialize scheduler configuration and stochastic lifecycle state.
 
@@ -67,6 +71,7 @@ class MiniMaxH3SDEScheduler(SchedulerMixin, ConfigMixin, SDESchedulerMixin):
             num_sde_steps: Number of eligible indices selected per rollout.
             seed: Seed for stochastic transition selection.
             dynamics_type: Configured ODE or SDE dynamics.
+            replay_steps: Actual rollout transitions to retain independently of noise.
         """
         self._validate_positive_number(shift, "shift")
         if not isinstance(noise_level, (int, float)) or isinstance(noise_level, bool):
@@ -92,6 +97,7 @@ class MiniMaxH3SDEScheduler(SchedulerMixin, ConfigMixin, SDESchedulerMixin):
         self.seed = seed
         self.dynamics_type = dynamics_type
         self._is_eval = False
+        self.set_replay_steps(replay_steps)
         self.num_inference_steps: Optional[int] = None
         self.sigmas: Optional[torch.Tensor] = None
         self.timesteps: Optional[torch.Tensor] = None
@@ -255,11 +261,6 @@ class MiniMaxH3SDEScheduler(SchedulerMixin, ConfigMixin, SDESchedulerMixin):
         generator = torch.Generator().manual_seed(self.seed)
         selected = torch.randperm(len(self.sde_steps), generator=generator)[: self.num_sde_steps]
         return self.sde_steps[selected]
-
-    @property
-    def train_timesteps(self) -> torch.Tensor:
-        """Return schedule indices used during policy optimization."""
-        return self.current_sde_steps
 
     def get_train_timesteps(self) -> torch.Tensor:
         """Return framework scheduler times selected for training."""

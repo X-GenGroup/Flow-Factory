@@ -20,6 +20,9 @@ from typing import Any, Dict, List, Literal, Optional, Union
 import torch
 from diffusers.utils.outputs import BaseOutput
 
+from ..contracts.replay import ReplaySteps, resolve_replay_steps, validate_replay_steps
+from ..utils.trajectory_collector import compute_trajectory_indices
+
 
 def stable_mean_except_batch(values: torch.Tensor) -> torch.Tensor:
     """Reduce transition statistics without FP32 tree-order drift.
@@ -114,6 +117,7 @@ class SDESchedulerMixin(ABC):
     seed: int
     dynamics_type: Literal["Flow-SDE", "Dance-SDE", "CPS", "ODE"]
     _is_eval: bool
+    replay_steps: ReplaySteps = "auto"
 
     # ==================== Mode Management ====================
     @property
@@ -143,6 +147,11 @@ class SDESchedulerMixin(ABC):
         ...
 
     # ==================== Step Selection ====================
+    def set_replay_steps(self, selection: ReplaySteps) -> None:
+        """Bind an independent copy of the shared rollout transition selection."""
+        validate_replay_steps(selection)
+        self.replay_steps = list(selection) if isinstance(selection, list) else selection
+
     def select_random_step_indices(
         self,
         eligible_steps: torch.Tensor,
@@ -228,10 +237,30 @@ class SDESchedulerMixin(ABC):
         ...
 
     @property
-    @abstractmethod
     def train_timesteps(self) -> torch.Tensor:
-        """Step indices for training timesteps."""
-        ...
+        """Actual replay indices; selecting them never changes rollout noise."""
+        num_steps = len(self.timesteps)
+        default = (
+            list(range(num_steps))
+            if self.dynamics_type == "ODE"
+            else self.current_sde_steps.tolist()
+        )
+        return torch.tensor(
+            resolve_replay_steps(self.replay_steps, num_steps, default), dtype=torch.int64
+        )
+
+    def get_trajectory_indices(self, *, include_terminal: bool = False) -> list[int] | None:
+        """Return minimal state positions for replay, or None when recording is off.
+
+        Transition ``i`` needs states ``i`` and ``i+1``. An objective may also
+        require the terminal state, independently of transition retention.
+        Endpoint re-noising trainers already request only that state; their
+        sampled training coordinates are not rollout replay indices.
+        """
+        indices = compute_trajectory_indices(
+            self.train_timesteps, len(self.timesteps), include_terminal=include_terminal
+        )
+        return indices or None
 
     @abstractmethod
     def get_train_timesteps(self) -> torch.Tensor:

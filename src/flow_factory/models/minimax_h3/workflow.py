@@ -128,6 +128,7 @@ def build_h3_scheduler(scheduler_args: Any, *, shift: float) -> MiniMaxH3SDESche
         num_sde_steps=scheduler_args.num_sde_steps,
         seed=scheduler_args.seed,
         dynamics_type=scheduler_args.dynamics_type,
+        replay_steps=scheduler_args.replay_steps,
     )
 
 

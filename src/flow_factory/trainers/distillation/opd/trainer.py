@@ -23,8 +23,8 @@ target supports ODE and SDE dynamics; velocity-derived targets are ODE-only.
 
 The distilled denoising steps are selected by ``train.timestep_range`` (a
 fraction band of the trajectory step indices; default 0.99 = upstream
-``timestep_fraction``), NOT the SDE-only ``scheduler.train_timesteps`` (which is
-empty under ODE). See ``_select_train_step_indices``.
+``timestep_fraction``), independently of ``scheduler.replay_steps``.
+See ``_select_train_step_indices``.
 
 Design (2-pass, per epoch):
   sample()    -> student rolls out on-policy trajectories (tagged by source),
@@ -492,7 +492,7 @@ class DiffusionOPDTrainer(BaseTrainer):
         Default ``0.99`` reproduces upstream DiffusionOPD's ``timestep_fraction``
         (distill the first 99% of steps, ``int(10*0.99)=9`` -> indices ``[0..8]``,
         skipping the near-clean tail). Deterministic and dynamics-agnostic, so it
-        does NOT use the SDE-only ``scheduler.train_timesteps`` (empty under ODE),
+        does NOT use ``scheduler.replay_steps``,
         and gives identical indices in ``sample()`` and ``optimize()``. The band
         comes from :func:`resolve_distill_step_band`, the same resolver
         ``get_num_train_timesteps`` uses for the gradient-accumulation count.

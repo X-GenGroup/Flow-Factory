@@ -15823,3 +15823,398 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: art-contracts
+  covers:
+  - algorithm.art.contracts
+  facets:
+  - objective
+  - trajectory
+  - parity
+  owners: &art_id001
+  - src/flow_factory/trainers/rl/art.py
+  - src/flow_factory/trainers/rl/art_objective.py
+  - src/flow_factory/hparams/training_args/art.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_art.py
+  fixture: Independent scalar covariance and objective controls, config/registry gates and group validation.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: Frozen targets, independent direction/mask derivatives and configurable replay updates; native
+      cases add exact fresh replay, complete sample windows, clipping/Adam and selected state/CP controls.
+      Common-parameter intervention proves derivatives, not uninterrupted trajectory equality.
+  artifacts:
+  - tests/trainers/test_art.py
+  - examples/art/lora/sd3_5/default.yaml
+  - examples/art/lora/sd3_5/pickscore_8gpu.yaml
+  - examples/art/lora/sd3_5/prepare_pickscore.py
+  - tests/trainers/test_full_output_backward.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: art-flux-ddp-native
+  covers:
+  - algorithm.art.flux_lifecycle
+  facets:
+  - objective
+  - trajectory
+  - parity
+  - distributed
+  - checkpoint
+  - runtime_state
+  owners: *art_id001
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_art_training.py::test_art_flux_ddp_resume
+  fixture: Native FLUX LoRA DDP2, image-derived rewards, two cycles and fresh-process continuation.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Frozen targets, independent direction/mask derivatives and configurable replay updates; native
+      cases add exact fresh replay, complete sample windows, clipping/Adam and selected state/CP controls.
+      Common-parameter intervention proves derivatives, not uninterrupted trajectory equality.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/test_art_training.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/flux_online_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - av
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: art-wan-tp-cp-native
+  covers:
+  - algorithm.art.wan_composition
+  facets:
+  - objective
+  - trajectory
+  - parity
+  - distributed
+  - checkpoint
+  - runtime_state
+  owners: *art_id001
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_art_training.py::test_art_wan_tp_sp_cp
+  fixture: Native Wan full DP2 TP2/SP with CP1/CP2, uninterrupted cycles plus an explicitly labeled common-parameter
+    derivative diagnostic.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Frozen targets, independent direction/mask derivatives and configurable replay updates; native
+      cases add exact fresh replay, complete sample windows, clipping/Adam and selected state/CP controls.
+      Common-parameter intervention proves derivatives, not uninterrupted trajectory equality.
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/test_art_training.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 180
+  resources:
+    gpus: 8
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - av
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+  execution_capability: wan-art-cp-v1
+
+- id: art-av-stream-native
+  covers:
+  - algorithm.art.av_stream
+  facets:
+  - objective
+  - trajectory
+  - parity
+  - distributed
+  owners:
+  - src/flow_factory/trainers/rl/art.py
+  - src/flow_factory/trainers/rl/art_objective.py
+  - src/flow_factory/hparams/training_args/art.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_art_components.py
+  fixture: Native tiny LTX2/H3 joint AV, per-component directions, two cycles and ordered complete-group
+    stream versus drained FP32 updates.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Native two-component updates with independent CPU objective controls; bounded ordered versus
+      drained FP32 gradient/update comparison with independent clipping and Adam controls. BF16 repeat execution is not a bitwise claim.
+  artifacts:
+  - tests/distributed/test_art_components.py
+  - src/flow_factory/scheduler/minimax_h3.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/wan_online_reward.py
+  cost_seconds: 480
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - av
+    - tokenizers
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: scheduler-replay-contracts
+  covers:
+  - scheduler.replay.contracts
+  facets:
+  - trajectory
+  - objective
+  - runtime_state
+  owners: &replay_id001
+  - src/flow_factory/contracts/replay.py
+  - src/flow_factory/hparams/scheduler_args.py
+  - src/flow_factory/scheduler/abc.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/scheduler
+  - tests/hparams/test_scheduler_sde_steps.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  - tests/trainers/test_group_shared_noise.py
+  - tests/trainers/test_runtime_identity.py
+  fixture: All three scheduler families, actual collector/index maps, coupled config/accumulation and
+    unchanged endpoint time sampling.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: none
+    description: ODE/SDE selection keeps noise and schedule bit-identical, preserves seeded replay order,
+      validates aligned component indices and loss cardinality, and leaves every endpoint re-noising distribution
+      unchanged.
+  artifacts:
+  - tests/models/test_bagel_tdm_contracts.py
+  - tests/scheduler/minimax_h3/test_scheduler.py
+  - tests/scheduler/minimax_h3/test_scheduler_review.py
+  - tests/scheduler/test_ode_dtype_consistency.py
+  - tests/scheduler/test_one_step_shift_terminal.py
+  - tests/scheduler/test_replay_selection.py
+  - tests/scheduler/test_schedule_bit_parity.py
+  - tests/scheduler/test_scheduler_group.py
+  - tests/hparams/test_scheduler_sde_steps.py
+  - tests/trainers/test_coupled_trainer_parity.py
+  - tests/trainers/test_group_shared_noise.py
+  - tests/trainers/test_runtime_identity.py
+  - tests/trainers/test_runtime_state.py
+  - tests/trainers/test_runtime_snapshot_lifecycle.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []
+- id: scheduler-replay-flux-native
+  covers:
+  - scheduler.replay.coupled
+  facets:
+  - overlap
+  - model_runtime
+  - objective
+  - feedback
+  - reward
+  - distributed
+  - runtime_state
+  - checkpoint
+  - parity
+  owners: *replay_id001
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/distributed/test_replay_selection.py
+  fixture: Native FLUX DPPO LoRA FSDP2 on two ranks; three noisy transitions and two selected replay positions
+    in reverse order.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Every selected transition replays exactly before mutation; independent DPPO derivatives,
+      group/GAS membership, optimizer/EMA updates, pending rewards, exact checkpoint load and ordered
+      continuation. Exploration has three noisy steps while optimization consumes only the configured
+      two.
+  artifacts:
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/conftest.py
+  - tests/distributed/context_parallel_overlap_runner.py
+  - tests/distributed/coupled_objective_reference.py
+  - tests/distributed/coupled_observations.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/wan_eval_reward.py
+  - tests/distributed/test_replay_selection.py
+  - tests/distributed/flux_replay_selection_fixture.py
+  cost_seconds: 90
+  resources:
+    gpus: 2
+    packages:
+    - pytest
+    - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
+    - numpy
+    - tokenizers
+    - Pillow
+    environment:
+      OMP_NUM_THREADS: '1'
+      PYTHONFAULTHANDLER: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+    model_paths: []

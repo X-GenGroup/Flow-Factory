@@ -1447,6 +1447,10 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "scheduler-replay-flux-native",
+                "art-av-stream-native",
+                "art-flux-ddp-native",
+                "art-wan-tp-cp-native",
                 "flux-complete-tp-sft",
                 "sd35-adaln-tp2-supervised-update",
                 "flux2-guard-ordered-full",
@@ -2017,6 +2021,8 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_sft_fixture.py",
             {
+                "scheduler-replay-flux-native",
+                "art-flux-ddp-native",
                 "native-attention-runtime",
                 "flux-complete-tp-sft",
                 "flux2-guard-ordered-full",
@@ -2393,6 +2399,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
         (
             "context_parallel_overlap_runner.py",
             {
+                "scheduler-replay-flux-native",
                 "flux-complete-tp-sft",
                 "sd35-adaln-tp2-supervised-update",
                 "flux2-guard-ordered-full",
@@ -4397,3 +4404,55 @@ def test_torch_compatibility_owners_retain_executable_witnesses(path, expected):
     cases, missing = planner.select_cases(catalog, required, [])
     assert not missing
     assert expected <= {row["id"] for row in cases if row["selected"]}
+
+
+def test_registry_declarations_do_not_admit_resolver_body_changes():
+    path = "src/flow_factory/trainers/registry.py"
+    old = '_TRAINER_REGISTRY = {"grpo": "pkg.GRPO"}\n\ndef resolve(name):\n    return name\n'
+    declaration = old.replace('"grpo": "pkg.GRPO"', '"grpo": "pkg.GRPO", "art": "pkg.ART"')
+    required = _real_source_requirements(path, old, declaration)["obligations"]
+    assert "execution.contracts" in required
+    assert not any(key.startswith("review.owner:") for key in required)
+    body = old.replace("return name", "return name.lower()")
+    required = _real_source_requirements(path, old, body)["obligations"]
+    assert any(key.startswith("review.owner:") for key in required)
+
+
+@pytest.mark.parametrize("symbol", ["GRPOTrainer.__init__", "GRPOTrainer.optimize"])
+def test_replay_initialization_focus_keeps_objective_changes_broad(symbol):
+    path = "src/flow_factory/trainers/rl/grpo.py"
+    required = planner.infer_requirements(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "semantic_symbols": {path: [symbol]},
+        },
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: [symbol]},
+    )["obligations"]
+    if symbol.endswith("__init__"):
+        assert {
+            "scheduler.replay.contracts",
+            "scheduler.replay.coupled",
+            "execution.contracts",
+        } <= set(required)
+        assert "overlap.native.wan.subgroup_ready" not in required
+    else:
+        assert "overlap.native.wan.subgroup_ready" in required
+
+
+def test_replay_policy_retains_all_factory_and_endpoint_sampling_controls():
+    catalog = yaml.safe_load((ROOT / planner.CATALOG).read_text())
+    cases = {row["id"]: row for row in catalog["cases"]}
+    assert (
+        "tests/scheduler/test_replay_selection.py"
+        in cases["scheduler-replay-contracts"]["artifacts"]
+    )
+    native = cases["scheduler-replay-flux-native"]
+    assert native["resources"]["gpus"] == 2
+    assert native["topology"]["dp_shard"] == 2 and native["topology"]["cp"] == 1
+    assert {
+        "tests/distributed/flux_replay_selection_fixture.py",
+        "tests/distributed/context_parallel_overlap_runner.py",
+    } <= set(native["artifacts"])

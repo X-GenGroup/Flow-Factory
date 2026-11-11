@@ -80,4 +80,6 @@ class GRPOTrainingArguments(TrainingArguments):
             )
 
     def get_num_train_timesteps(self, args: Any) -> int:
-        return args.scheduler_args.num_sde_steps
+        return args.scheduler_args.get_num_replay_steps(
+            self.num_inference_steps, require_stochastic=True
+        )

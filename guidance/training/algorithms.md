@@ -32,6 +32,7 @@
    - [Reward monitoring](#reward-monitoring)
 - [TDM](#tdm)
 - [TDM-R1](#tdm-r1)
+- [DiffusionART](#diffusionart)
 - [DiffusionNFT](#diffusionnft)
    - [Old Policy via EMA](#old-policy-via-ema)
 - [AWM: Advantage Weighted Matching](#awm-advantage-weighted-matching)
@@ -66,7 +67,7 @@ online/offline selection out of model adapters and loss functions.
 At a high level, the supported algorithms fall into three paradigms:
 
 - **Coupled paradigm (GRPO and variants)**: Training timesteps are coupled with the SDE-based sampling dynamics, requiring tractable log-probability computation for policy gradient optimization.
-- **Decoupled paradigm (SFT, offline DPO, online DPO, DiffusionNFT, AWM, DGPO, CRD, TDM-R1)**: Training timesteps are decoupled from the actual sampling dynamics, making them inherently solver-agnostic.
+- **Decoupled paradigm (SFT, offline DPO, online DPO, DiffusionNFT, AWM, DGPO, CRD, TDM-R1)**: Training timesteps are decoupled from the actual sampling dynamics, allowing objective-specific timestep sampling. ART uses the same non-likelihood execution category but replays actual Euler ODE trajectories; it is not solver-agnostic.
 - **Distillation paradigm (DiffusionOPD, DMD2, TDM)**: Students match flow-matching targets. DiffusionOPD uses a teacher; DMD2 and TDM keep a fake score on one model bundle and update it before the generator.
 
 DMD2, TDM, and TDM-R1 update fake first. TDM-R1 then updates the surrogate
@@ -151,6 +152,12 @@ scheduler:
 ```
 
 `sde_steps` lists distinct transition indices in `[0, num_inference_steps - 1]`, and `num_sde_steps` must be a positive integer no larger than that list; any other value is rejected when the config loads, so lower `sde_steps` whenever you lower `num_inference_steps`. `sde_steps: null` selects every transition except the last (`0 .. num_inference_steps - 2`), and `num_sde_steps: null` uses the whole list. Omitting `num_sde_steps` keeps its default of `1`.
+
+`scheduler.replay_steps` independently selects which actual transitions are retained and
+optimized. Its default `auto` preserves the selected noisy steps. For example,
+`sde_steps: [0, 1, 2]`, `num_sde_steps: null`, `replay_steps: [0, 2]` explores at three
+steps and trains at two. See [sampling, replay and re-noising](sampling.md) for the
+selection values, ODE use and the separate NFT/AWM/DGPO time-sampling controls.
 
 #### Decoupled Training and Inference Resolution
 
@@ -738,6 +745,19 @@ See [`examples/tdm_r1/lora/sd3_5/ocr.yaml`](../../examples/tdm_r1/lora/sd3_5/ocr
 for the official-aligned SD3.5 OCR setup: rank-32 LoRA, G24, 48 prompt groups,
 `surrogate_preference_beta=10`, `tdm_weight=0.3`, and one fake/surrogate/generator update per epoch.
 Related work: [[12]](#ref12).
+
+## DiffusionART
+
+Use `train.trainer_type: art` for reward-guided regression on saved Euler ODE trajectories.
+It forms one endpoint/reward covariance direction per complete prompt group, freezes the
+rollout velocities, then replays them under the configured optimizer schedule. The default
+recipe uses **two sequential parameter updates on disjoint sample halves**.
+A directional trust mask permits corrective moves while limiting outward movement.
+
+ART requires `rank_local` (`group_contiguous`) groups. Update counts, inner epochs and
+advantage reduction follow the shared configuration; FP32 trajectory storage is the default. Single-latent and structured audio/video trajectories use component-aware
+objectives. Async scoring and ordered/ready complete-group overlap are supported. See the [ART guide](art.md) for the
+objective, configuration, sampler arithmetic, precision and selected evidence.
 
 ## DiffusionNFT
 

@@ -69,9 +69,10 @@ class GRPOTrainer(CoupledReplayRuntimeMixin, BaseTrainer):
     reward_optimization_overlap_contract = COUPLED_REWARD_OPTIMIZATION_OVERLAP
 
     def __init__(self, **kwargs):
+        config = kwargs["config"]
+        self.num_train_timesteps = config.training_args.get_num_train_timesteps(config)
         super().__init__(**kwargs)
         self.training_args: GRPOTrainingArguments
-        self.num_train_timesteps = self.adapter.scheduler.num_sde_steps
 
     @property
     def enable_kl_loss(self) -> bool:

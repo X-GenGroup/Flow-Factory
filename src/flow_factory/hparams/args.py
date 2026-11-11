@@ -30,6 +30,7 @@ from typing import Any, Dict, Literal, Optional
 import yaml
 
 from ..contracts.execution import AcquisitionMode, ExecutionContract, FeedbackMode
+from ..contracts.replay import validate_replay_steps
 from ..contracts.sampler import (
     GroupPlacement,
     SamplerLayoutContract,
@@ -479,6 +480,9 @@ class Arguments(ArgABC):
         # (the config schema stays permissive for a future multi-teacher trainer).
         self._validate_teacher_sources()
         self._resolve_scheduler_sde_defaults()
+        validate_replay_steps(
+            self.scheduler_args.replay_steps, self.training_args.num_inference_steps
+        )
         self._inherit_eval_video_geometry()
         self._validate_multirole_training_contract()
         if self._get_execution_contract().acquisition is AcquisitionMode.DATASET:
