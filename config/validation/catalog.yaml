@@ -16270,5 +16270,5 @@ cases:
     - av
     environment:
       OMP_NUM_THREADS: '1'
-      CUDA_VISIBLE_DEVICES: ''
+      CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
