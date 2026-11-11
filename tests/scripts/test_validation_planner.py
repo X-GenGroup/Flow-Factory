@@ -1797,9 +1797,7 @@ def test_actual_guard_owner_selects_coupled_objective_and_flux_intersection(meth
     }
 
 
-@pytest.mark.parametrize(
-    "method", ["enable_kl_loss", "sample", "sample_batch", "optimize"]
-)
+@pytest.mark.parametrize("method", ["enable_kl_loss", "sample", "sample_batch", "optimize"])
 def test_actual_grpo_base_owner_retains_inherited_guard_and_dppo_consumers(method):
     path = "src/flow_factory/trainers/rl/grpo.py"
     before = (ROOT / path).read_text()
