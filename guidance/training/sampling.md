@@ -127,6 +127,12 @@ set `num_sde_steps: null` (or the full pool size) and choose positions inside
 transition required by a fixed replay list of `[0, 2]`. The framework rejects
 that configuration instead of silently dropping step 2 and changing loss counts.
 
+These requirements are checked while resolving the configuration, including when
+`train.gradient_accumulation_steps` is set explicitly, before the training loader
+creates an Accelerator or loads model weights. Counting replay loss terms does not
+perform admission or sample a random set of positions;
+the optimizer loop reads the scheduler's actual selection for that rollout.
+
 `replay_steps: all` means **all `T` generation transitions**, not all noisy
 transitions. It therefore usually includes deterministic steps and is unsuitable
 for these objectives; use `auto` to train on all *realized noisy* transitions.

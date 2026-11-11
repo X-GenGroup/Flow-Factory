@@ -26,7 +26,7 @@ def _parse(train: dict, eval_args: Optional[dict] = None) -> Arguments:
             "per_device_batch_size": 1,
             **train,
         },
-        "scheduler": {"dynamics_type": "ODE"},
+        "scheduler": {"dynamics_type": "Flow-SDE"},
         "rewards": [{"name": "score", "reward_model": "clip"}],
     }
     if eval_args is not None:

@@ -1798,7 +1798,7 @@ def test_actual_guard_owner_selects_coupled_objective_and_flux_intersection(meth
 
 
 @pytest.mark.parametrize(
-    "method", ["__init__", "enable_kl_loss", "sample", "sample_batch", "optimize"]
+    "method", ["enable_kl_loss", "sample", "sample_batch", "optimize"]
 )
 def test_actual_grpo_base_owner_retains_inherited_guard_and_dppo_consumers(method):
     path = "src/flow_factory/trainers/rl/grpo.py"
@@ -4418,7 +4418,9 @@ def test_registry_declarations_do_not_admit_resolver_body_changes():
     assert any(key.startswith("review.owner:") for key in required)
 
 
-@pytest.mark.parametrize("symbol", ["GRPOTrainer.__init__", "GRPOTrainer.optimize"])
+@pytest.mark.parametrize(
+    "symbol", ["GRPOTrainer.__init__", "GRPOTrainer.training_args", "GRPOTrainer.optimize"]
+)
 def test_replay_initialization_focus_keeps_objective_changes_broad(symbol):
     path = "src/flow_factory/trainers/rl/grpo.py"
     required = planner.infer_requirements(
@@ -4431,7 +4433,7 @@ def test_replay_initialization_focus_keeps_objective_changes_broad(symbol):
         yaml.safe_load((ROOT / planner.POLICY).read_text()),
         {path: [symbol]},
     )["obligations"]
-    if symbol.endswith("__init__"):
+    if symbol != "GRPOTrainer.optimize":
         assert {
             "scheduler.replay.contracts",
             "scheduler.replay.coupled",
@@ -4440,6 +4442,33 @@ def test_replay_initialization_focus_keeps_objective_changes_broad(symbol):
         assert "overlap.native.wan.subgroup_ready" not in required
     else:
         assert "overlap.native.wan.subgroup_ready" in required
+
+
+@pytest.mark.parametrize(
+    "symbol,covered",
+    [
+        ("TrainingArguments.validate_configuration", True),
+        ("TrainingArguments.get_num_train_timesteps", True),
+        ("TrainingArguments.__post_init__", False),
+    ],
+)
+def test_training_configuration_hook_does_not_admit_unrelated_base_changes(symbol, covered):
+    path = "src/flow_factory/hparams/training_args/_base.py"
+    required = planner.infer_requirements(
+        {
+            "paths": [path],
+            "facets": [],
+            "scope_complete": True,
+            "semantic_symbols": {path: [symbol]},
+        },
+        yaml.safe_load((ROOT / planner.POLICY).read_text()),
+        {path: [symbol]},
+    )["obligations"]
+    if covered:
+        assert {"execution.contracts", "scheduler.replay.contracts"} <= set(required)
+        assert not any(key.startswith("review.") for key in required)
+    else:
+        assert any(key.startswith("review.") for key in required)
 
 
 def test_replay_policy_retains_all_factory_and_endpoint_sampling_controls():

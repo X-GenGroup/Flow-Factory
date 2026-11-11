@@ -81,39 +81,54 @@ class SchedulerArguments(ArgABC):
             self.num_sde_steps = 0
             self.noise_level = 0.0
 
-    def get_num_replay_steps(self, num_steps: int, *, require_stochastic: bool = False) -> int:
-        """Count loss terms without drawing RNG; validate explicit likelihood selections.
+    def get_num_replay_steps(self, num_steps: int) -> int:
+        """Count configured replay terms without selecting positions or drawing RNG."""
+        if self.replay_steps == "auto":
+            if self.dynamics_type == "ODE":
+                return num_steps
+            if self.num_sde_steps is not None:
+                return self.num_sde_steps
+            return len(self.sde_steps) if self.sde_steps is not None else num_steps - 1
+        if self.replay_steps == "all":
+            return num_steps
+        return len(self.replay_steps or [])
+
+    def validate_replay_selection(
+        self, num_steps: int, *, require_stochastic: bool = False
+    ) -> None:
+        """Validate the payload required by a transition-replay objective.
 
         A fixed replay subset must be stochastic on every rollout. With random
-        SDE selection, use ``auto`` or retain the complete SDE pool; silently
-        intersecting two selections would change the accumulation geometry.
+        SDE selection, use ``auto``; explicit positions require every candidate
+        to receive noise. Validation never draws a stochastic selection.
         """
+        validate_replay_steps(self.replay_steps, num_steps)
+        if self.get_num_replay_steps(num_steps) < 1:
+            raise ValueError(
+                "This objective requires at least one scheduler.replay_steps transition; "
+                f"received replay_steps={self.replay_steps!r}"
+            )
+        if not require_stochastic:
+            return
+        if self.dynamics_type == "ODE" or self.noise_level <= 0:
+            raise ValueError(
+                "Transition likelihood replay requires stochastic dynamics and positive "
+                f"noise_level; received dynamics_type={self.dynamics_type!r}, "
+                f"noise_level={self.noise_level!r}"
+            )
         pool = self.sde_steps if self.sde_steps is not None else list(range(num_steps - 1))
         count = len(pool) if self.num_sde_steps is None else self.num_sde_steps
-        if require_stochastic and self.replay_steps == "auto":
-            # Preserve legacy config resolution. Coupled trainer initialization
-            # already owns dynamics admission, including ODE-only test configs.
-            return count
-        default = list(range(num_steps)) if self.dynamics_type == "ODE" else pool[:count]
-        selected = resolve_replay_steps(self.replay_steps, num_steps, default)
-        if not selected:
+        if self.replay_steps == "auto":
+            return
+        selected = resolve_replay_steps(self.replay_steps, num_steps, pool)
+        if count != len(pool) or not set(selected).issubset(pool):
             raise ValueError(
-                "This objective requires at least one scheduler.replay_steps transition"
+                "Explicit scheduler.replay_steps for likelihood replay must be stochastic "
+                "on every rollout: use replay_steps='auto' with random SDE selection, or "
+                "set num_sde_steps=null and choose a subset of sde_steps; "
+                f"received replay_steps={self.replay_steps!r}, sde_steps={pool!r}, "
+                f"num_sde_steps={count!r}"
             )
-        if require_stochastic:
-            if self.dynamics_type == "ODE" or self.noise_level <= 0:
-                raise ValueError(
-                    "Transition likelihood replay requires stochastic dynamics and positive noise_level"
-                )
-            if self.replay_steps != "auto" and (
-                count != len(pool) or not set(selected).issubset(pool)
-            ):
-                raise ValueError(
-                    "Explicit scheduler.replay_steps for likelihood replay must be stochastic "
-                    "on every rollout: use replay_steps='auto' with random SDE selection, or "
-                    "set num_sde_steps=null and choose a subset of sde_steps"
-                )
-        return len(selected)
 
     def to_dict(self) -> dict[str, Any]:
         result = super().to_dict()

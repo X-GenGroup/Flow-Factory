@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ._base import TrainingArguments, _standardize_clip_range, require_config_bool
+
+if TYPE_CHECKING:
+    from ..args import Arguments
 
 
 @dataclass
@@ -79,7 +82,11 @@ class GRPOTrainingArguments(TrainingArguments):
                 f"Invalid KL type: {self.kl_type}. Valid options are: ['v-based', 'x-based']."
             )
 
-    def get_num_train_timesteps(self, args: Any) -> int:
-        return args.scheduler_args.get_num_replay_steps(
+    def validate_configuration(self, args: Arguments) -> None:
+        """Require nonempty stochastic replay before allocating training resources."""
+        args.scheduler_args.validate_replay_selection(
             self.num_inference_steps, require_stochastic=True
         )
+
+    def get_num_train_timesteps(self, args: Any) -> int:
+        return args.scheduler_args.get_num_replay_steps(self.num_inference_steps)

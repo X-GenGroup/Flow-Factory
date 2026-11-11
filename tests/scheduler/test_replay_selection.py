@@ -83,7 +83,7 @@ def test_selection_and_storage_do_not_change_noise_or_schedule(cls, dynamics, se
             assert collector.get_result() is None and collector.get_index_map() is None
 
 
-def parse(algorithm="art", selection="auto", **scheduler_values):
+def parse(algorithm="art", selection="auto", *, training_values=None, **scheduler_values):
     return Arguments.from_dict(
         {
             "train": {
@@ -92,6 +92,7 @@ def parse(algorithm="art", selection="auto", **scheduler_values):
                 "unique_sample_num_per_epoch": 8,
                 "group_size": 2,
                 "per_device_batch_size": 2,
+                **(training_values or {}),
             },
             "scheduler": {
                 "dynamics_type": "ODE" if algorithm == "art" else "Flow-SDE",
@@ -132,10 +133,65 @@ def test_bad_replay_selection_fails_at_config_load(selection):
         parse(selection=selection)
 
 
-@pytest.mark.parametrize("selection,changes", [([1], {}), ([0], {"num_sde_steps": 1}), ("all", {})])
-def test_likelihood_replay_cannot_select_unrealized_stochastic_transitions(selection, changes):
+@pytest.mark.parametrize("algorithm", ["grpo", "grpo-guard", "dppo"])
+@pytest.mark.parametrize("accumulation", ["auto", 1])
+@pytest.mark.parametrize(
+    "selection,changes",
+    [
+        ([1], {}),
+        ([0], {"num_sde_steps": 1}),
+        ("all", {}),
+        ("auto", {"dynamics_type": "ODE"}),
+        ("auto", {"noise_level": 0}),
+    ],
+)
+def test_likelihood_replay_is_validated_independently_of_accumulation(
+    algorithm, accumulation, selection, changes
+):
     with pytest.raises(ValueError, match="stochastic"):
-        parse("grpo", selection, **changes)
+        parse(
+            algorithm,
+            selection,
+            training_values={"gradient_accumulation_steps": accumulation},
+            **changes,
+        )
+
+
+@pytest.mark.parametrize("algorithm", ["art", "grpo", "grpo-guard", "dppo"])
+@pytest.mark.parametrize("selection", [None, []])
+def test_manual_accumulation_still_rejects_empty_replay(algorithm, selection):
+    with pytest.raises(ValueError, match="at least one"):
+        parse(algorithm, selection, training_values={"gradient_accumulation_steps": 2})
+
+
+@pytest.mark.parametrize("algorithm", ["art", "grpo", "grpo-guard", "dppo"])
+def test_explicit_accumulation_is_preserved_with_valid_subset(algorithm):
+    config = parse(algorithm, [4, 0], training_values={"gradient_accumulation_steps": 7})
+    assert config.training_args.gradient_accumulation_steps == 7
+    assert config.training_args.get_num_train_timesteps(config) == 2
+
+
+@pytest.mark.parametrize("accumulation", ["auto", 2])
+def test_art_dynamics_are_validated_independently_of_accumulation(accumulation):
+    with pytest.raises(ValueError, match="ART requires scheduler.dynamics_type='ODE'"):
+        parse(
+            "art",
+            training_values={"gradient_accumulation_steps": accumulation},
+            dynamics_type="Flow-SDE",
+        )
+
+
+def test_counting_is_pure_and_separate_from_objective_admission():
+    from dataclasses import asdict
+
+    args = SchedulerArguments(replay_steps=None)
+    before = asdict(args)
+    rng = torch.get_rng_state().clone()
+    assert args.get_num_replay_steps(6) == 0
+    assert asdict(args) == before
+    torch.testing.assert_close(torch.get_rng_state(), rng, rtol=0, atol=0)
+    with pytest.raises(ValueError, match="at least one"):
+        args.validate_replay_selection(6, require_stochastic=True)
 
 
 @pytest.mark.parametrize("cls", SCHEDULERS)

@@ -16,10 +16,17 @@
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from ...contracts.sampler import RANK_LOCAL_SAMPLER_SELECTION, SamplerSelectionContract
+from ...contracts.sampler import (
+    RANK_LOCAL_SAMPLER_SELECTION,
+    SamplerSelectionContract,
+    get_sampler_layout_contract,
+)
 from ._base import TrainingArguments
+
+if TYPE_CHECKING:
+    from ..args import Arguments
 
 
 @dataclass
@@ -72,12 +79,18 @@ class ARTTrainingArguments(TrainingArguments):
             setattr(self, name, value)
         super().__post_init__()
 
-    def get_num_train_timesteps(self, args: Any) -> int:
-        """Count selected replay positions for shared accumulation geometry."""
+    def validate_configuration(self, args: "Arguments") -> None:
+        """Require ODE replay and complete local groups before runtime allocation."""
         if args.scheduler_args.dynamics_type != "ODE":
             raise ValueError("ART requires scheduler.dynamics_type='ODE'")
         if args.acceleration_args.rollout:
             raise ValueError(
                 "ART requires matching rollout/replay forwards; rollout-only accelerators are unsupported"
             )
+        if not get_sampler_layout_contract(args.data_args.sampler_type).groups_are_rank_local:
+            raise ValueError("ART requires a rank_local/group_contiguous sampler")
+        args.scheduler_args.validate_replay_selection(self.num_inference_steps)
+
+    def get_num_train_timesteps(self, args: Any) -> int:
+        """Count selected replay positions for shared accumulation geometry."""
         return args.scheduler_args.get_num_replay_steps(self.num_inference_steps)

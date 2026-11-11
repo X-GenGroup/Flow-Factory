@@ -485,9 +485,11 @@ class Arguments(ArgABC):
         )
         self._inherit_eval_video_geometry()
         self._validate_multirole_training_contract()
+        if self._get_execution_contract().acquisition is AcquisitionMode.GENERATION:
+            self._resolve_sampler_type()
+        self.training_args.validate_configuration(self)
         if self._get_execution_contract().acquisition is AcquisitionMode.DATASET:
             return
-        self._resolve_sampler_type()
         self._align_batch_geometry()
         self._adjust_gradient_accumulation()
         self._validate_dmd2_batch_geometry()

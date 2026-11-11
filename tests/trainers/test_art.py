@@ -221,11 +221,11 @@ def test_ode_and_rollout_parity_gates():
     args = config()
     args.scheduler_args.dynamics_type = "Flow-SDE"
     with pytest.raises(ValueError, match="ODE"):
-        args.training_args.get_num_train_timesteps(args)
+        args.training_args.validate_configuration(args)
     args.scheduler_args.dynamics_type = "ODE"
     args.acceleration_args.rollout = [object()]
     with pytest.raises(ValueError, match="rollout"):
-        args.training_args.get_num_train_timesteps(args)
+        args.training_args.validate_configuration(args)
 
 
 def test_covariance_matches_independent_scalar_reference():

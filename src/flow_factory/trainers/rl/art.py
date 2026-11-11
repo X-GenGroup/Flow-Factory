@@ -21,7 +21,6 @@ from typing import ClassVar
 import torch
 
 from ...contracts.reward_overlap import RANK_LOCAL_REWARD_OPTIMIZATION_OVERLAP
-from ...contracts.sampler import get_sampler_layout_contract
 from ...samples import BaseSample
 from ...samples.identity import GroupKey, sample_group_key
 from ...scheduler.flow_match_euler_discrete import FlowMatchEulerDiscreteSDEScheduler
@@ -56,13 +55,6 @@ class DiffusionARTTrainer(BaseTrainer):
     context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
         ContextParallelTrainingCapability()
     )
-
-    def __init__(self, **kwargs):
-        config = kwargs["config"]
-        config.training_args.get_num_train_timesteps(config)
-        if not get_sampler_layout_contract(config.data_args.sampler_type).groups_are_rank_local:
-            raise ValueError("ART requires a rank_local/group_contiguous sampler")
-        super().__init__(**kwargs)
 
     def _validate_paradigm_dynamics(self):
         """The trust metric is defined for this concrete Euler ODE convention."""

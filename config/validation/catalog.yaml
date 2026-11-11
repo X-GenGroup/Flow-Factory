@@ -16089,6 +16089,8 @@ cases:
   - -q
   - tests/scheduler
   - tests/hparams/test_scheduler_sde_steps.py
+  - tests/hparams/test_eval_video_geometry.py
+  - tests/hparams/test_multirole_training_args.py
   - tests/trainers/test_coupled_trainer_parity.py
   - tests/trainers/test_group_shared_noise.py
   - tests/trainers/test_runtime_identity.py
@@ -16121,6 +16123,8 @@ cases:
   - tests/scheduler/test_schedule_bit_parity.py
   - tests/scheduler/test_scheduler_group.py
   - tests/hparams/test_scheduler_sde_steps.py
+  - tests/hparams/test_eval_video_geometry.py
+  - tests/hparams/test_multirole_training_args.py
   - tests/trainers/test_coupled_trainer_parity.py
   - tests/trainers/test_group_shared_noise.py
   - tests/trainers/test_runtime_identity.py

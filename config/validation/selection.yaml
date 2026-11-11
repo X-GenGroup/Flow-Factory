@@ -16,14 +16,18 @@ owners:
     symbols: ['<module>', Arguments.__post_init__]
     requires: [repository.consistency, execution.contracts, scheduler.replay.contracts, scheduler.replay.coupled]
     reason: Configuration composition and shared replay validation need registry/config controls plus a prepared subset consumer.
+  - paths: [src/flow_factory/hparams/training_args/_base.py]
+    symbols: ['<module>', TrainingArguments.validate_configuration, TrainingArguments.get_num_train_timesteps]
+    requires: [execution.contracts, scheduler.replay.contracts]
+    reason: The default validation hook and backward-term count preserve all registered argument classes; algorithm overrides own replay requirements.
   - paths: [src/flow_factory/hparams/training_args/grpo.py, src/flow_factory/hparams/training_args/dppo.py]
-    symbols: ['*.get_num_train_timesteps']
+    symbols: ['<module>', '*.get_num_train_timesteps', '*.validate_configuration']
     requires: [scheduler.replay.contracts, scheduler.replay.coupled]
     reason: Likelihood term counts must match retained stochastic transitions and actual accumulation.
   - paths: [src/flow_factory/trainers/rl/grpo.py]
     symbols: [GRPOTrainer.__init__]
     requires: [scheduler.replay.contracts, scheduler.replay.coupled]
-    reason: Shared GRPO/Guard/DPPO initialization must validate replay before loading and keep configured counts.
+    reason: Removing constructor count caches preserves shared GRPO/Guard/DPPO configuration and actual replay indices.
   - paths: [src/flow_factory/scheduler/abc.py, src/flow_factory/scheduler/flow_match_euler_discrete.py,
             src/flow_factory/scheduler/unipc_multistep.py, src/flow_factory/scheduler/minimax_h3.py]
     symbols: ['<module>', SDESchedulerMixin, '*.train_timesteps', '*.get_trajectory_indices', '*.set_replay_steps', '*.__init__']
@@ -1365,9 +1369,9 @@ interactions:
 
 focused_owners:
   - paths: [src/flow_factory/trainers/rl/grpo.py]
-    symbols: [GRPOTrainer.__init__]
+    symbols: [GRPOTrainer.__init__, GRPOTrainer.training_args]
     requires: [execution.contracts, scheduler.replay.contracts, scheduler.replay.coupled]
-    reason: Replay-count initialization is covered by all coupled CPU objectives and a real FSDP2 subset consumer; rollout and loss methods keep their broader routes.
+    reason: Constructor cache removal and training-argument type declarations are covered by coupled CPU objectives and a real FSDP2 subset consumer; rollout and loss methods keep their broader routes.
   - paths: [src/flow_factory/models/minimax_h3/workflow.py]
     symbols: [build_h3_scheduler]
     requires: [scheduler.replay.contracts, algorithm.art.av_stream]
