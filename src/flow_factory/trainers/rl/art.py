@@ -29,8 +29,8 @@ from ...utils.noise_schedule import flow_match_sigma
 from ...utils.trajectory_collector import compute_trajectory_indices
 from ..abc import BaseTrainer
 from ..common.context_parallel import ContextParallelTrainingCapability
-from ..common.forward_kwargs import replay_forward_kwargs
-from .art_objective import art_objective, endpoint_guidance
+from ..common.forward_kwargs import reference_forward_kwargs, replay_forward_kwargs
+from .art_objective import art_objective, endpoint_guidance, reference_velocity_mse
 
 
 def _group_key(sample: BaseSample) -> GroupKey:
@@ -174,6 +174,19 @@ class DiffusionARTTrainer(BaseTrainer):
             )
         return {}
 
+    def _reference_velocity(self, batch, replay):
+        """Predict the replayed state's velocity with the frozen reference parameters."""
+        with torch.no_grad(), self.adapter.use_ref_parameters(), self.autocast():
+            return self.adapter.forward_state(
+                batch=batch,
+                state=replay.state,
+                times=replay.times,
+                next_state=replay.next_state,
+                compute_log_prob=False,
+                return_fields=("velocity",),
+                **reference_forward_kwargs(self, batch),
+            ).velocity
+
     def _optimize_partition(self, ordered, loss_info):
         """Consume complete groups using saved anchors and the shared accumulator."""
         components = self.adapter.trajectory_component_order
@@ -203,8 +216,18 @@ class DiffusionARTTrainer(BaseTrainer):
                             return_fields=("velocity", "dt"),
                             **replay_forward_kwargs(self, batch),
                         )
-                    component_losses = []
+                    reference = (
+                        self._reference_velocity(batch, replay)
+                        if self.training_args.kl_beta > 0
+                        else None
+                    )
+                    component_losses, component_kl = [], []
                     for name in components:
+                        mask = (
+                            None
+                            if replay.state.active_masks is None
+                            else replay.state.active_masks[name]
+                        )
                         terms = art_objective(
                             self._art_velocity_sign * output.velocity.components[name],
                             self._art_velocity_sign * old.components[name],
@@ -215,18 +238,28 @@ class DiffusionARTTrainer(BaseTrainer):
                             kl_threshold=self.training_args.art_kl_threshold,
                             reference_noise_level=self.training_args.art_reference_noise_level,
                             epsilon=self.training_args.art_epsilon,
-                            active_mask=(
-                                None
-                                if replay.state.active_masks is None
-                                else replay.state.active_masks[name]
-                            ),
+                            active_mask=mask,
                         )
                         component_losses.append(terms["per_sample_loss"])
                         loss_info[f"art_keep_fraction/{name}"].append(terms["keep"].float().mean())
                         loss_info[f"art_reference_kl/{name}"].append(terms["kl"].mean())
+                        if reference is not None:
+                            component_kl.append(
+                                reference_velocity_mse(
+                                    self._art_velocity_sign * output.velocity.components[name],
+                                    self._art_velocity_sign * reference.components[name],
+                                    mask,
+                                )
+                            )
                     # Equal component means match the upstream AV objective and prevent
                     # a larger video latent from implicitly overwhelming audio.
                     loss = torch.stack(component_losses).mean()
+                    if reference is not None:
+                        kl_div = torch.stack(component_kl).mean()
+                        kl_loss = self.training_args.kl_beta * kl_div
+                        loss = loss + kl_loss
+                        loss_info["kl_div"].append(kl_div.detach())
+                        loss_info["kl_loss"].append(kl_loss.detach())
                     loss_info["loss"].append(loss.detach())
                     self._backward_full_output_loss(loss)
                     if self.accelerator.sync_gradients:

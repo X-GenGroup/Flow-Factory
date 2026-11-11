@@ -89,6 +89,9 @@ def test_registry_and_two_update_geometry(monkeypatch):
         {"art_guidance_scale": float("nan")},
         {"art_kl_threshold": -1},
         {"art_reference_noise_level": 0},
+        {"kl_beta": -1},
+        {"kl_beta": float("inf")},
+        {"kl_type": "x-based"},
     ],
 )
 def test_invalid_arguments(values):
@@ -521,6 +524,87 @@ def test_joint_components_use_own_direction_time_and_equal_weight():
     assert len(actual) == 2
     for loss in actual:
         torch.testing.assert_close(loss, expected.mean())
+
+
+def test_reference_velocity_mse_is_opt_in():
+    assert config().training_args.kl_beta == 0
+    assert not config().training_args.requires_ref_model
+    assert config(kl_beta=1e-3).training_args.requires_ref_model
+
+
+def test_reference_velocity_mse_is_unweighted_unmasked_and_equal_per_component():
+    from collections import defaultdict
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    from test_full_output_backward import _art_trainer
+
+    from flow_factory.samples import LatentState
+
+    trainer, samples, (weight,) = _art_trainer()
+    trainer.training_args.kl_beta = 0.5
+    adapter = trainer.adapter
+    adapter.trajectory_component_order = ("video", "audio")
+    # Equal rewards give zero guidance: ART keeps no sample, so only the reference term trains.
+    for sample in samples:
+        sample.extra_kwargs["advantage"] = torch.tensor(1.0)
+    adapter.get_terminal_state = lambda batch: LatentState(
+        {"video": batch["all_latents"][:, -1], "audio": batch["all_latents"][:, -1, :1]}
+    )
+    state = LatentState({"video": torch.ones(1, 2), "audio": torch.ones(1, 1)})
+    times = SimpleNamespace(
+        timestep={"video": torch.tensor([500.0]), "audio": torch.tensor([250.0])}
+    )
+    adapter.get_replay_step = lambda batch, i: SimpleNamespace(
+        state=state, next_state=state, times=times
+    )
+    adapter.get_replay_callback = lambda batch, i, field: LatentState(
+        {k: torch.zeros_like(v) for k, v in state.components.items()}
+    )
+    reference = {"video": torch.tensor([[0.3, -0.1]]), "audio": torch.tensor([[0.7]])}
+    in_reference, reference_grad_enabled = [False], []
+
+    @contextmanager
+    def use_ref_parameters():
+        in_reference[0] = True
+        try:
+            yield
+        finally:
+            in_reference[0] = False
+
+    def forward_state(**kwargs):
+        if in_reference[0]:
+            reference_grad_enabled.append(torch.is_grad_enabled())
+            assert kwargs["return_fields"] == ("velocity",)
+            return SimpleNamespace(velocity=LatentState(dict(reference)))
+        return SimpleNamespace(
+            velocity=LatentState({k: weight.expand_as(v) for k, v in state.components.items()}),
+            dt={"video": torch.tensor([-0.5]), "audio": torch.tensor([-0.25])},
+        )
+
+    adapter.use_ref_parameters = use_ref_parameters
+    adapter.forward_state = forward_state
+    updates = []
+    trainer._apply_optimizer_step = lambda metrics: updates.append(
+        {k: list(v) for k, v in metrics.items()}
+    ) or defaultdict(list)
+    trainer.optimize(samples)
+
+    def reference_term(w):
+        video = (w - reference["video"]).square().mean()
+        audio = (w - reference["audio"]).square().mean()
+        return (video + audio) / 2
+
+    expected_kl = reference_term(weight.detach())
+    assert reference_grad_enabled == [False, False]
+    assert len(updates) == 2
+    for metrics in updates:
+        torch.testing.assert_close(metrics["art_keep_fraction/video"][0], torch.tensor(0.0))
+        torch.testing.assert_close(metrics["kl_div"][0], expected_kl)
+        torch.testing.assert_close(metrics["loss"][0], 0.5 * expected_kl)
+    # The optimizer step is stubbed, so both microbatch gradients accumulate.
+    expected_grad = 2 * torch.autograd.grad(0.5 * reference_term(weight), weight)[0]
+    torch.testing.assert_close(weight.grad, expected_grad)
 
 
 def test_stream_geometry_accumulates_across_complete_group_tiles(monkeypatch):
