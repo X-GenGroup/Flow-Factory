@@ -27,8 +27,100 @@ Selection does not change the noise schedule, consume a new RNG draw, or force a
 optimizer update count. Automatic gradient accumulation uses the selected number
 of loss terms; explicitly configured accumulation keeps its existing precedence.
 
+### GRPO, Guard and DPPO: start with `auto`
+
+**`num_sde_steps: 2` with `replay_steps: auto` preserves the existing automatic
+selection behavior.** Omitting `replay_steps` has the same effect because `auto`
+is its default. Existing configurations do not need a new replay setting.
+
+These three settings act in sequence:
+
+| Setting | Meaning | Default / YAML `null` |
+|---|---|---|
+| `sde_steps` | Candidate transition indices eligible for noise | Omitted or `null`: `0 .. T-2`, excluding the final transition |
+| `num_sde_steps` | Number of distinct candidates that receive noise | Omitted: **1**. `null`: **every candidate**. An integer must be between 1 and the candidate count |
+| `replay_steps` | Transitions used by the training objective | Omitted or `auto`: the **actual noisy selection**. `null` means no replay and is invalid for these likelihood objectives |
+
+The scheduler draws without replacement when the count is smaller than the
+candidate pool. The draw is reproducible under its current seed. `auto` follows
+that same selection and order; it does not draw another subset. Unselected
+transitions still execute during generation, with zero SDE noise.
+
+**Randomly select two steps from the default pool:**
+
 ```yaml
-# ART: deterministic generation, sparse replay, plus the required final latent.
+train:
+  trainer_type: grpo  # The scheduler settings also apply to grpo-guard and dppo.
+  num_inference_steps: 20
+scheduler:
+  dynamics_type: Flow-SDE
+  noise_level: 0.7
+  sde_steps: null
+  num_sde_steps: 2
+  replay_steps: auto  # Optional: this is already the default.
+```
+
+Here the candidate pool is `[0, ..., 18]`. If the realized selection is `[7, 2]`,
+those two transitions receive noise and are replayed for training. All 20
+generation transitions still run; the other 18 are deterministic. The two
+replayed transitions contribute two loss terms per sample, not necessarily two
+optimizer updates. To restrict random selection to an earlier region, replace
+`sde_steps: null` with a pool such as `[0, 1, 2, 3]` and keep the other settings.
+
+**Always add noise and train at two fixed steps:**
+
+```yaml
+scheduler:
+  dynamics_type: Flow-SDE
+  sde_steps: [0, 2]
+  num_sde_steps: null  # Use both candidates; 2 is equivalent for this pool.
+  replay_steps: auto
+```
+
+**Add noise at three fixed steps, but train at only two of them:**
+
+```yaml
+scheduler:
+  dynamics_type: Flow-SDE
+  sde_steps: [0, 1, 2]
+  num_sde_steps: null  # All three are noisy on every rollout.
+  replay_steps: [0, 2]
+```
+
+Step 1 still injects noise and affects the generated sample, but contributes no
+replay loss. This is an optional way to separate exploration from training;
+ordinary random two-step training only needs the first example.
+
+For a pool of `[0, 1, 2]`, the combinations are:
+
+| `num_sde_steps` | `replay_steps` | Noisy transitions | Training transitions |
+|---|---|---|---|
+| omitted (`1`) | omitted (`auto`) | One randomly selected candidate | That same one |
+| `2` | `auto` | Two randomly selected candidates | Those same two |
+| `null` or `3` | `auto` | `[0, 1, 2]` | `[0, 1, 2]` |
+| `null` or `3` | `[0, 2]` | `[0, 1, 2]` | `[0, 2]` |
+| `2` | `[0, 2]` | Two randomly selected candidates | **Rejected:** either requested position could be deterministic |
+
+GRPO, Guard and DPPO compute transition likelihoods, so every replay position
+must have stochastic dynamics and positive noise. With a fixed replay list,
+set `num_sde_steps: null` (or the full pool size) and choose positions inside
+`sde_steps`. For example, a random selection of `[0, 1]` cannot supply the noisy
+transition required by a fixed replay list of `[0, 2]`. The framework rejects
+that configuration instead of silently dropping step 2 and changing loss counts.
+
+`replay_steps: all` means **all `T` generation transitions**, not all noisy
+transitions. It therefore usually includes deterministic steps and is unsuitable
+for these objectives; use `auto` to train on all *realized noisy* transitions.
+Also, `num_sde_steps: null` means all candidates, whereas omitting it keeps the
+default count of one. ODE generation and an empty replay selection cannot supply
+the stochastic transition likelihoods these trainers require.
+
+### ART: select ODE transitions
+
+For ART, `auto` selects every ODE transition. An explicit list can reduce stored
+states and replay work while the objective still retains its required final latent:
+
+```yaml
 train:
   trainer_type: art
   num_inference_steps: 20
@@ -37,21 +129,10 @@ scheduler:
   replay_steps: [0, 5, 10, 15]
 ```
 
-```yaml
-# GRPO/Guard/DPPO: explore at three steps, train at two.
-scheduler:
-  dynamics_type: Flow-SDE
-  sde_steps: [0, 1, 2]
-  num_sde_steps: null
-  replay_steps: [0, 2]
-```
-
-A likelihood objective needs a stochastic transition for each selected step.
-With random SDE-step selection, keep `replay_steps: auto`; a fixed subset is valid
-when every member is guaranteed to be noisy. The framework rejects incompatible
-selections instead of silently intersecting them and changing accumulation.
-ART also needs a nonempty transition selection. These are payload requirements,
-not restrictions on the number of optimizer updates or inner epochs.
+ART needs a nonempty transition selection. ODE sets the SDE fields to an empty
+pool, zero noisy steps and zero noise; `num_sde_steps` does not limit ART replay.
+These are payload requirements, not restrictions on the number of optimizer
+updates or inner epochs.
 
 ## Re-noise a terminal state
 
