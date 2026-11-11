@@ -64,8 +64,27 @@ Here the candidate pool is `[0, ..., 18]`. If the realized selection is `[7, 2]`
 those two transitions receive noise and are replayed for training. All 20
 generation transitions still run; the other 18 are deterministic. The two
 replayed transitions contribute two loss terms per sample, not necessarily two
-optimizer updates. To restrict random selection to an earlier region, replace
-`sde_steps: null` with a pool such as `[0, 1, 2, 3]` and keep the other settings.
+optimizer updates.
+
+**Randomly select two steps from four explicit candidates:**
+
+```yaml
+train:
+  trainer_type: grpo  # Also applies to grpo-guard and dppo.
+  num_inference_steps: 20
+scheduler:
+  dynamics_type: Flow-SDE
+  noise_level: 0.7
+  sde_steps: [0, 1, 2, 3]  # The candidate pool, not four guaranteed noisy steps.
+  num_sde_steps: 2         # Draw two distinct positions from that pool.
+  replay_steps: auto      # Train on exactly the two positions drawn.
+```
+
+For example, if the draw is `[2, 0]`, only transitions 2 and 0 receive noise and
+are replayed for training. Candidates 1 and 3, and every transition outside the
+pool, still execute with zero SDE noise. The actual pair depends on the scheduler
+seed; `[2, 0]` is illustrative. Setting `num_sde_steps: 4` or `null` instead would
+make all four candidates noisy and train on all four with `auto`.
 
 **Always add noise and train at two fixed steps:**
 
