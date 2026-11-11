@@ -37,11 +37,8 @@ class WandbLogger(Logger):
             return wandb.Image(value.get_value(height, width), caption=value.caption)
 
         if isinstance(value, LogVideo):
-            return wandb.Video(
-                value.get_value(format="mp4", height=height, width=width),
-                caption=value.caption,
-                format="mp4",
-            )
+            path = self._video_path(value, height, width)
+            return None if path is None else wandb.Video(path, caption=value.caption, format="mp4")
 
         if isinstance(value, LogTable):
             # For LogTable, all items have the same height for better formatting
@@ -59,3 +56,6 @@ class WandbLogger(Logger):
 
     def _log_impl(self, data: Dict, step: int):
         self.platform.log(data, step=step)
+
+    def _finish_platform(self) -> None:
+        self.platform.finish()

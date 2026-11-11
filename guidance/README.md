@@ -14,6 +14,7 @@ checks that the model, algorithm and resource layout can work together.
 | [Parallel training](parallelism/README.md) | Understand DP, TP, SP and CP, then choose a GPU layout |
 | [Model coverage](parallelism/models.md) · [Algorithm coverage](parallelism/algorithms.md) | Check supported regions and composition limits |
 | [Precision](configuration/compute-precision.md) · [Acceleration](configuration/acceleration.md) | Set compute precision and optional accelerators |
+| [Logging](configuration/logging.md) | Choose a backend and bound media encoding off the training thread |
 | [Async rewards](training/workflow/async_reward.md) · [Reward overlap](training/workflow/reward_optimization_overlap.md) | Run feedback alongside useful training work |
 | [Prompt enhancement](training/prompt-enhance.md) | Prepare enhanced prompts before training |
 

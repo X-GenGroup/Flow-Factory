@@ -53,9 +53,56 @@ def test_video_resize_with_only_width_preserves_aspect_ratio(
 ) -> None:
     """Resize every video frame with the shared aspect-ratio rule."""
     module = _tensorboard_module(monkeypatch)
-    video = LogVideo(np.zeros((2, 40, 80, 3), dtype=np.uint8))
+    frames = np.zeros((2, 40, 80, 3), dtype=np.uint8)
+    frames[1] = 200  # the GIF writer merges identical consecutive frames
+    video = LogVideo(frames)
+    writer = object.__new__(module.TensorboardLogger)
+    writer.media_max_bytes = None
 
-    kind, array, _, _ = module.TensorboardLogger._convert_to_platform(None, video, width=40)
+    kind, path, _ = writer._convert_to_platform(video, width=40)
 
     assert kind == "video"
-    assert array.shape == (1, 2, 3, 20, 40)
+    with Image.open(path) as gif:
+        assert gif.format == "GIF" and gif.size == (40, 20) and gif.n_frames == 2
+    video.cleanup()
+
+
+def test_video_is_written_as_a_gif_image_summary_without_moviepy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Write the encoded GIF bytes directly; SummaryWriter.add_video would need moviepy."""
+    module = _tensorboard_module(monkeypatch)
+
+    class Summary:
+        def __init__(self, value):
+            self.value = value
+
+        class Value:
+            def __init__(self, tag, image):
+                self.tag, self.image = tag, image
+
+        class Image:
+            def __init__(self, **fields):
+                self.fields = fields
+
+    proto = types.ModuleType("tensorboard.compat.proto.summary_pb2")
+    proto.Summary = Summary
+    monkeypatch.setitem(sys.modules, "tensorboard.compat.proto.summary_pb2", proto)
+    written = []
+    writer = object.__new__(module.TensorboardLogger)
+    writer.media_max_bytes = None
+    writer.platform = types.SimpleNamespace(
+        file_writer=types.SimpleNamespace(add_summary=lambda s, step: written.append((s, step))),
+        close=lambda: None,
+    )
+    video = LogVideo(np.zeros((3, 12, 20, 3), dtype=np.uint8))
+
+    writer._log_single("samples/0", writer._convert_to_platform(video), 5)
+
+    ((summary, step),) = written
+    (value,) = summary.value
+    fields = value.image.fields
+    assert step == 5 and value.tag == "samples/0"
+    assert (fields["height"], fields["width"], fields["colorspace"]) == (12, 20, 3)
+    assert fields["encoded_image_string"][:6] in (b"GIF87a", b"GIF89a")
+    video.cleanup()

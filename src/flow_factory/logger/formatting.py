@@ -226,6 +226,23 @@ def _compute_resize_dims(
     return int(target_w / aspect), target_w
 
 
+def _resize_frames(arr: np.ndarray, height: int, width: int) -> np.ndarray:
+    """Resize every (T, H, W, C) frame to ``height`` x ``width``."""
+    return np.stack(
+        [
+            np.array(Image.fromarray(frame).resize((width, height), Image.Resampling.LANCZOS))
+            for frame in arr
+        ],
+        axis=0,
+    )
+
+
+# Frames encoded to measure this video's bytes per frame-pixel before fitting a budget.
+_FIT_PROBE_FRAMES = 8
+# Encodings tried while fitting; each recalibrates on the previous attempt's measured size.
+_FIT_MAX_ATTEMPTS = 3
+
+
 # ---------------------------- LogImage, LogVideo & LogTable Classes ----------------------------
 
 
@@ -274,6 +291,13 @@ class LogImage:
         if self._img is None:
             self._img = LogImage.to_pil(self._value)
         return self._img
+
+    def materialize(self) -> None:
+        """Own a CPU copy so a background writer never reads the caller's tensors."""
+        if isinstance(self._value, str):
+            return
+        self._img = self.get_pil().copy()
+        self._value = self._img
 
     def get_size(self) -> Tuple[int, int]:
         """Get image dimensions as (height, width)."""
@@ -441,11 +465,19 @@ class LogVideo:
         arr = self.get_numpy()
         return arr.shape[1], arr.shape[2]
 
+    def materialize(self) -> None:
+        """Own CPU copies of frames and audio so a background writer never reads caller tensors."""
+        if not isinstance(self._value, str):
+            self._arr = np.array(self.get_numpy(), copy=True)
+            self._value = self._arr
+        if isinstance(self.audio, torch.Tensor):
+            self.audio = self.audio.detach().to("cpu", copy=True)
+
     @staticmethod
     def _write_mp4_with_audio(
         path: str,
         frames: np.ndarray,
-        fps: int,
+        fps: float,
         audio: torch.Tensor,
         audio_sample_rate: int,
     ) -> None:
@@ -459,7 +491,8 @@ class LogVideo:
         import av
 
         container = av.open(path, mode="w")
-        video_stream = container.add_stream("libx264", rate=int(fps))
+        # A subsampled budget-fitted video can have a fractional frame rate.
+        video_stream = container.add_stream("libx264", rate=Fraction(fps).limit_denominator(1000))
         video_stream.width = frames.shape[2]
         video_stream.height = frames.shape[1]
         video_stream.pix_fmt = "yuv420p"
@@ -552,40 +585,105 @@ class LogVideo:
         if height is not None or width is not None:
             orig_h, orig_w = arr.shape[1], arr.shape[2]
             new_h, new_w = _compute_resize_dims(orig_h, orig_w, height, width)
-            resized = []
-            for frame in arr:
-                img = Image.fromarray(frame).resize((new_w, new_h), Image.Resampling.LANCZOS)
-                resized.append(np.array(img))
-            arr = np.stack(resized, axis=0)
+            arr = _resize_frames(arr, new_h, new_w)
 
-        # Write to temp file
+        path = self._write(arr, self.fps, format, with_audio=True)
+        self._temp_paths[cache_key] = path
+        return path
+
+    def get_fitted_value(
+        self,
+        format: str,
+        max_bytes: int,
+        *,
+        min_fps: float,
+        min_side: int,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+    ) -> Optional[str]:
+        """Encode within ``max_bytes`` by lowering the frame rate first, then the resolution.
+
+        The encoded size per frame-pixel is measured on this video (a short probe, then
+        each attempt), never assumed. Subsampling keeps the duration and A/V timing by
+        dividing the frame rate by the same stride. Returns None with a warning when the
+        budget cannot be met above ``min_fps`` and ``min_side``.
+
+        Args:
+            format: Output container, ``'gif'`` or ``'mp4'``.
+            max_bytes: Size limit of the encoded file.
+            min_fps: Lowest output frame rate.
+            min_side: Smallest output short side in pixels.
+            height: Optional display height applied before fitting.
+            width: Optional display width applied before fitting.
+
+        Returns:
+            Path to the encoded file, or None if no admissible encoding fits.
+        """
+        format = format.lower().lstrip(".")
+        cache_key = ("fitted", format, max_bytes, min_fps, min_side, height, width)
+        if cache_key in self._temp_paths:
+            return self._temp_paths[cache_key]
+        arr = self.get_numpy()
+        if height is not None or width is not None:
+            arr = _resize_frames(arr, *_compute_resize_dims(*arr.shape[1:3], height, width))
+        frames, src_h, src_w = arr.shape[:3]
+        probe = min(frames, _FIT_PROBE_FRAMES)
+        probe_path = self._write(arr[:probe], self.fps, format, with_audio=False)
+        bytes_per_unit = os.path.getsize(probe_path) / (probe * src_h * src_w)
+        os.unlink(probe_path)
+        max_stride = max(1, math.floor(self.fps / min_fps))
+        attempt = None
+        for _ in range(_FIT_MAX_ATTEMPTS):
+            budget_units = max_bytes / bytes_per_unit
+            stride = min(max_stride, max(1, math.ceil(frames * src_h * src_w / budget_units)))
+            kept = math.ceil(frames / stride)
+            area = min(1.0, budget_units / (kept * src_h * src_w))
+            scale = math.sqrt(area)
+            out_h = max(2, int(src_h * scale) // 2 * 2) if scale < 1 else src_h
+            out_w = max(2, int(src_w * scale) // 2 * 2) if scale < 1 else src_w
+            if scale < 1 and min(out_h, out_w) < min(min_side, src_h, src_w):
+                break
+            candidate = arr[::stride]
+            if (out_h, out_w) != (src_h, src_w):
+                candidate = _resize_frames(candidate, out_h, out_w)
+            path = self._write(candidate, self.fps / stride, format, with_audio=True)
+            size = os.path.getsize(path)
+            attempt = (stride, out_h, out_w, size)
+            if size <= max_bytes:
+                self._temp_paths[cache_key] = path
+                return path
+            os.unlink(path)
+            bytes_per_unit = size / (kept * out_h * out_w)
+        logger.warning(
+            f"Skipping video {self.caption!r}: no {format} encoding of {frames}x{src_h}x{src_w} "
+            f"@ {self.fps} fps fits {max_bytes} bytes with fps >= {min_fps} and short side >= "
+            f"{min_side} (last attempt stride, height, width, bytes: {attempt})"
+        )
+        return None
+
+    def _write(self, arr: np.ndarray, fps: float, format: str, *, with_audio: bool) -> str:
+        """Encode frames into a new temporary file and return its path."""
         fd, path = tempfile.mkstemp(suffix=f".{format}")
+        os.close(fd)
+        audio = with_audio and self.audio is not None and self.audio_sample_rate is not None
         try:
-            os.close(fd)
-            if format == "mp4" and self.audio is not None and self.audio_sample_rate is not None:
-                self._write_mp4_with_audio(path, arr, self.fps, self.audio, self.audio_sample_rate)
+            if format == "mp4" and audio:
+                self._write_mp4_with_audio(path, arr, fps, self.audio, self.audio_sample_rate)
             elif format == "gif":
-                imageio.mimwrite(path, arr, fps=self.fps, format="GIF", loop=0)
+                imageio.mimwrite(path, arr, duration=1000 / fps, format="GIF", loop=0)
             else:
                 imageio.mimwrite(
-                    path, arr, fps=self.fps, format="FFMPEG", codec="libx264", pixelformat="yuv420p"
+                    path, arr, fps=fps, format="FFMPEG", codec="libx264", pixelformat="yuv420p"
                 )
-            self._temp_paths[cache_key] = path
         except ImportError:
             logger.warning(
                 "PyAV (av) not installed; writing video without audio. Install with: pip install av"
             )
-            if os.path.exists(path):
-                os.unlink(path)
-            fd2, path = tempfile.mkstemp(suffix=f".{format}")
-            os.close(fd2)
             imageio.mimwrite(
-                path, arr, fps=self.fps, format="FFMPEG", codec="libx264", pixelformat="yuv420p"
+                path, arr, fps=fps, format="FFMPEG", codec="libx264", pixelformat="yuv420p"
             )
-            self._temp_paths[cache_key] = path
-        except Exception:
-            if os.path.exists(path):
-                os.unlink(path)
+        except BaseException:
+            os.unlink(path)
             raise
         return path
 
@@ -755,6 +853,13 @@ class LogTable:
             rows.append(row)
 
         return cls(columns=columns, rows=rows, target_height=target_height) if rows else None
+
+    def materialize(self) -> None:
+        """Own CPU copies of every contained item before a background write."""
+        for row in self.rows:
+            for item in row:
+                if item is not None:
+                    item.materialize()
 
     def cleanup(self):
         """Remove all temporary files from contained LogImage/LogVideo items."""
