@@ -56,7 +56,10 @@ def _parse_train(
     config = {
         "data": data_overrides or {},
         "train": train,
-        "scheduler": {"dynamics_type": "ODE", **(scheduler_overrides or {})},
+        "scheduler": {
+            "dynamics_type": "Flow-SDE" if trainer_type == "grpo" else "ODE",
+            **(scheduler_overrides or {}),
+        },
     }
     if rewards is not None:
         config["rewards"] = rewards

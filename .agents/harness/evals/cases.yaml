@@ -1,6 +1,13 @@
 version: 2
 
 cases:
+  - name: shared rollout replay selection
+    intent: develop
+    paths:
+      src/flow_factory/contracts/replay.py: "def resolve_replay_steps(selection, num_steps, default_steps): return list(default_steps)"
+    expected_profile: R4
+    expected_facets: [trajectory, objective, runtime_state]
+
   - name: shared evaluation row and statistic ownership
     intent: develop
     paths:

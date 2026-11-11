@@ -338,6 +338,7 @@ def compute_trajectory_indices(
     train_timestep_indices: Union[List[int], torch.Tensor],
     num_inference_steps: int,
     include_initial: bool = False,
+    include_terminal: bool = False,
 ) -> List[int]:
     """Compute the minimal set of trajectory positions needed for training.
 
@@ -351,6 +352,7 @@ def compute_trajectory_indices(
             (e.g., scheduler.train_timesteps). 0-based trajectory indices.
         num_inference_steps: Total denoising steps T.
         include_initial: Always include position 0 (initial noise).
+        include_terminal: Always include position T (final latent).
 
     Returns:
         Sorted list of unique trajectory positions to collect.
@@ -371,6 +373,8 @@ def compute_trajectory_indices(
 
     if include_initial:
         positions.add(0)
+    if include_terminal:
+        positions.add(num_inference_steps)
 
     for idx in train_timestep_indices:
         if 0 <= idx < total_positions:

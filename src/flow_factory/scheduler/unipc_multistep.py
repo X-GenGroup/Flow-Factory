@@ -25,6 +25,7 @@ from diffusers.schedulers.scheduling_unipc_multistep import UniPCMultistepSchedu
 from diffusers.utils.outputs import BaseOutput
 from diffusers.utils.torch_utils import randn_tensor
 
+from ..contracts.replay import ReplaySteps
 from ..utils.base import to_broadcast_tensor
 from ..utils.logger_utils import setup_logger
 from ..utils.noise_schedule import flow_match_sigma
@@ -62,6 +63,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         num_sde_steps: Optional[int] = None,
         seed: int = 42,
         dynamics_type: Literal["Flow-SDE", "Dance-SDE", "CPS", "ODE"] = "Flow-SDE",
+        replay_steps: ReplaySteps = "auto",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -77,6 +79,7 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         self.seed = seed
         self.dynamics_type = dynamics_type
         self._is_eval = False
+        self.set_replay_steps(replay_steps)
 
     @property
     def is_eval(self):
@@ -124,11 +127,6 @@ class UniPCMultistepSDEScheduler(UniPCMultistepScheduler, SDESchedulerMixin):
         if self.num_sde_steps >= len(self.sde_steps):
             return self.sde_steps
         return self.select_random_step_indices(self.sde_steps, self.num_sde_steps)
-
-    @property
-    def train_timesteps(self) -> torch.Tensor:
-        """Return the timestep **indices** to train on."""
-        return self.current_sde_steps
 
     def get_train_timesteps(self) -> torch.Tensor:
         """Return the timesteps at ``train_timesteps``."""

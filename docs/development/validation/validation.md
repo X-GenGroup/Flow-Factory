@@ -87,6 +87,11 @@ on-policy replay; DMD2 requires `reward: none` and real sequential generator/fak
 Both include full/LoRA, fixed-topology continuation, references and EMA. Algorithm-specific
 cross-layout numerical diagnostics cannot replace within-run replay or optimizer-state checks.
 
+`wan-art-cp-v1` admits only the selected FSDP2 Q2 DP2 × TP2 × CP2 runtime with varying rewards
+and a numerical oracle. Its test retains uninterrupted two-cycle training plus an explicitly
+labeled common-parameter gradient diagnostic for the discrete trust mask. The latter is not
+uninterrupted cross-layout trajectory equivalence. FLUX DDP ART continuation has a separate case.
+
 A case may explicitly use `execution_scope: topology_only` for process-group geometry without
 model execution. This narrow scope accepts `backend: gloo` (Q0) or `backend: nccl` (Q2), including
 CP axes, with an `assertions` oracle and `reward: none`. It does not permit EP, real-model Q3

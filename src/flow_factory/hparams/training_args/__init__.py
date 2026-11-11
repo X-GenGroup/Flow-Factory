@@ -27,6 +27,7 @@ from ..gradient_checkpointing import (
 )
 from ._base import EvaluationArguments, TrainingArguments
 from ._registry import get_training_args_class, list_registered_training_args
+from .art import ARTTrainingArguments
 from .awm import AWMTrainingArguments
 from .crd import CRDTrainingArguments
 from .dgpo import DGPOTrainingArguments
@@ -49,6 +50,7 @@ __all__ = [
     "GRPOTrainingArguments",
     "DPPOTrainingArguments",
     "NFTTrainingArguments",
+    "ARTTrainingArguments",
     "AWMTrainingArguments",
     "DPOTrainingArguments",
     "DGPOTrainingArguments",

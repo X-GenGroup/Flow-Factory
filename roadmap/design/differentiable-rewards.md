@@ -1,7 +1,8 @@
 # Differentiable feedback and component execution
 
 Design checkpoint for [P18–P21](../milestones/v0.5x-v0.6.md), reviewed 2026-11-11.
-ART extends the existing reward-regression path in v0.5.x. ReFL/DRTune and flexible component
+ART merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377) as an additive v0.5.x
+feature on the existing reward-regression path. ReFL/DRTune and flexible component
 placement follow for v0.6, before [NCCL EP](expert-parallelism.md). This is a design, not an
 implemented differentiable reward/backend API.
 
@@ -34,6 +35,19 @@ claiming identical scores. Frame selection and temporal aggregation belong to th
 Start with direct end-to-end autograd. A staged VJP may later reduce memory: score the decoded
 output, obtain its derivative, then replay decoder/policy under the same weights, randomness and
 precision. This needs an explicit lifetime and identity contract, not an asynchronous buffer hack.
+
+## Reuse the merged replay boundary
+
+The [shared sampling contract](../../guidance/training/sampling.md) from #377 already owns
+`scheduler.replay_steps`, transition retention and trajectory index mapping. Configuration
+admission runs after scheduler/sampler resolution even with explicit gradient accumulation.
+Reuse these owners instead of introducing algorithm-specific copies of replay selection.
+
+Retention selects which rollout states/transitions are saved; it does not choose an autograd
+graph, a stop-gradient boundary or a differentiable solver update. ReFL/DRTune must declare
+those derivative semantics separately in their execution contract. Terminal-state re-noising
+for NFT/AWM/DGPO/CRD likewise continues to use the existing `TimeSampler` controls rather than
+being reinterpreted as recorded-transition replay.
 
 ## Distribution ownership
 

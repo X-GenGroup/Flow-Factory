@@ -1,15 +1,19 @@
 # Flow-Factory roadmap
 
-Latest reviewed baseline: main `bec447f4` (2026-11-11), including Torch precision PR #375.
+Latest reviewed baseline: main `29593921` (2026-11-11), including ART and shared replay selection in PR #377.
 P01–P14 are merged and [v0.5.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0).
-The 19-model / 14-trainer TP/SP/Ulysses-CP inventory, SP completion, shared parallelism owners,
+The historical v0.5.0 19-model / 14-trainer TP/SP/Ulysses-CP inventory, SP completion, shared parallelism owners,
 P12j sharded loading and P13a evidence continuity remain the implemented foundation. Historical
 [algorithm](handoffs/v0.5-algorithm-closure.md), [model](handoffs/v0.5-model-closure.md) and
 [SP](handoffs/v0.5-sp-completion.md) handoffs retain original evidence identities, not current tasks.
 
-P15a user documentation merged in #376. The active next step is
-[P18 DiffusionART](milestones/v0.5x-v0.6.md#p18), an additive v0.5.x feature using existing
-sampling/reward/optimizer owners. [P19–P21](milestones/v0.5x-v0.6.md#p19) then deliver ReFL,
+P15a user documentation merged in #376. [P18 DiffusionART](milestones/v0.5x-v0.6.md#p18)
+merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377), bringing the current registry
+to 15 trainers; its supported compositions and evidence are recorded in the
+[ART guide](../guidance/training/art.md), not inferred from the historical matrix. The next
+development entry is [P19a: reward derivative contract](milestones/v0.5x-v0.6.md#p19a).
+ART experiment follow-through and v0.5.x publication remain separate from that dependency.
+[P19–P21](milestones/v0.5x-v0.6.md#p19) deliver ReFL,
 differentiable rewards, component execution policies and DRTune for v0.6. Backend expansion
 waits: P15b–P15f target NCCL EP in v0.7; P16 targets optional DeepEP in v0.8. P17 remains the
 v1.0 stabilization boundary. See the [derivative/placement design](design/differentiable-rewards.md).
@@ -17,8 +21,8 @@ v1.0 stabilization boundary. See the [derivative/placement design](design/differ
 Use independent worktrees and native Stack PRs when work is dependent; the user reviews and merges.
 Reuse valid GPU receipts at their original sources. Changed contracts select targeted local jobs
 within eight GPUs, not a Cartesian matrix, cross-node campaign or fixed reward deployment.
-Publication of v0.5.0 and the source-only v0.5.1 tag does not publish the later #375 source as an
-image or a new release. See [installation identities](../guidance/installation.md).
+Publication of v0.5.0 and the source-only v0.5.1 tag does not publish the later #375 or #377
+source as an image or a new release. See [installation identities](../guidance/installation.md).
 
 This directory records planned work, dependencies, acceptance criteria, and contribution entry
 points. It does not declare a feature supported or replace the current development rules in
@@ -86,7 +90,7 @@ artifacts; v0.5.1 is source-only. Historical release-page backfill is optional.
 
 ## Starting evidence
 
-Last checked: **2026-11-11**, main `bec447f4`. See the
+Last checked: **2026-11-11**, main `29593921`. See the
 [v0.5 release records](milestones/v0.5.md#release-records) for immutable tag targets and the
 post-release Torch qualifications. Alpha/beta/RC rows describe acceptance boundaries, not
 published historical tags; do not manufacture those tags retroactively.
@@ -119,8 +123,9 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| ART implementation | [P18](milestones/v0.5x-v0.6.md#p18): rank-local endpoint guidance and configurable updates | Current additive v0.5.x work |
-| Differentiable reward and ReFL | [P19](milestones/v0.5x-v0.6.md#p19) | Typed input-gradient contract before sharding |
+| Differentiable reward | [P19a](milestones/v0.5x-v0.6.md#p19a): typed input-gradient contract and one frozen scorer | Next development entry; P18 implementation is merged |
+| ReFL | [P19b](milestones/v0.5x-v0.6.md#p19b): replicated derivative reference | P19a before component sharding |
+| ART experiment and publication | [P18 follow-through](milestones/v0.5x-v0.6.md#p18): record final experiment outcomes and review release identity | Preserve original evidence; does not block P19a |
 | Component distribution | [P20](milestones/v0.5x-v0.6.md#p20) | Reuse runtime/loading owners; replicated reference first |
 | DRTune | [P21](milestones/v0.5x-v0.6.md#p21) | Exact selected-step derivative program before optional VJP optimization |
 | Deferred EP model admission | [P15b](milestones/v0.6-v0.7.md#p15b): pin DiT-MoE semantics and upstream reference | Resolve conditioning, auxiliary objective and expert ownership before EP runtime |

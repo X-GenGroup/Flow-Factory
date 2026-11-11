@@ -14,7 +14,7 @@
 
 import pytest
 
-from flow_factory.hparams import Arguments
+from flow_factory.hparams import Arguments, SchedulerArguments
 
 
 def _parse(scheduler: dict, num_inference_steps: int = 6) -> Arguments:
@@ -75,6 +75,6 @@ def test_malformed_sde_configuration_fails_at_config_load(
 
 def test_ode_dynamics_skip_sde_step_validation() -> None:
     """Leave ODE runs alone: they have no stochastic transitions to validate."""
-    config = _parse({"dynamics_type": "ODE", "sde_steps": list(range(10))})
+    config = SchedulerArguments(dynamics_type="ODE", sde_steps=list(range(10)))
 
-    assert config.scheduler_args.sde_steps == []
+    assert config.sde_steps == []

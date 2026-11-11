@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 import torch
 from diffusers.utils.outputs import BaseOutput
 
+from ..contracts.replay import ReplaySteps, resolve_replay_steps, validate_replay_steps
+
 
 def stable_mean_except_batch(values: torch.Tensor) -> torch.Tensor:
     """Reduce transition statistics without FP32 tree-order drift.
@@ -114,6 +116,7 @@ class SDESchedulerMixin(ABC):
     seed: int
     dynamics_type: Literal["Flow-SDE", "Dance-SDE", "CPS", "ODE"]
     _is_eval: bool
+    replay_steps: ReplaySteps = "auto"
 
     # ==================== Mode Management ====================
     @property
@@ -143,6 +146,11 @@ class SDESchedulerMixin(ABC):
         ...
 
     # ==================== Step Selection ====================
+    def set_replay_steps(self, selection: ReplaySteps) -> None:
+        """Bind an independent copy of the shared rollout transition selection."""
+        validate_replay_steps(selection)
+        self.replay_steps = list(selection) if isinstance(selection, list) else selection
+
     def select_random_step_indices(
         self,
         eligible_steps: torch.Tensor,
@@ -228,10 +236,17 @@ class SDESchedulerMixin(ABC):
         ...
 
     @property
-    @abstractmethod
     def train_timesteps(self) -> torch.Tensor:
-        """Step indices for training timesteps."""
-        ...
+        """Actual replay indices; selecting them never changes rollout noise."""
+        num_steps = len(self.timesteps)
+        default = (
+            list(range(num_steps))
+            if self.dynamics_type == "ODE"
+            else self.current_sde_steps.tolist()
+        )
+        return torch.tensor(
+            resolve_replay_steps(self.replay_steps, num_steps, default), dtype=torch.int64
+        )
 
     @abstractmethod
     def get_train_timesteps(self) -> torch.Tensor:

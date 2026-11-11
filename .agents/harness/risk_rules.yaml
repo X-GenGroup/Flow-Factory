@@ -40,6 +40,10 @@ logging_only_rule:
   reason: Complete sources differ only in literal module-console logging statements.
 
 path_rules:
+  - glob: "src/flow_factory/contracts/replay.py"
+    profile: R4
+    facets: [trajectory, objective, runtime_state]
+    reason: Shared rollout selection defines retained states and optimizer term geometry.
   - glob: src/flow_factory/models/compute_precision.py
     profile: R4
     facets: [model_runtime, parity, runtime_state]
