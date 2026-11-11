@@ -53,34 +53,18 @@ claim all optional upstream covariance/mask variants or reproduction of pretrain
 
 ## Configure ART
 
-Start from the [two-GPU SD3.5 LoRA recipe](../../examples/art/lora/sd3_5/default.yaml), set the model
-and dataset locations, then run `ff-train examples/art/lora/sd3_5/default.yaml`.
-The recipe's dataset must provide `train.jsonl` prompt records as described in the
-[dataset guide](datasets.md).
+Start from the [official SD3.5/PickScore recipe](../../examples/art/lora/sd3_5/pickscore_8gpu.yaml).
+Set the dataset location and, if using a local checkpoint, `model.model_name_or_path`.
+The [recipe instructions below](#official-pickscore-recipe-8-gpus) describe the data and launch command.
 
-```yaml
-data:
-  sampler_type: rank_local  # auto also resolves to group_contiguous for ART
-train:
-  trainer_type: art
-  group_size: 4
-  unique_sample_num_per_epoch: 4
-  per_device_batch_size: 1
-  num_inference_steps: 20
-  gradient_step_per_epoch: 2
-  gradient_accumulation_steps: auto
-  num_inner_epochs: 1
-  latent_storage_dtype: float32
-  global_std: false
-  advantage_aggregation: gdpo
-  art_guidance_scale: 1.0
-  art_kl_threshold: 1.0e-5
-  art_reference_noise_level: 0.8
-  reward_optimization_overlap: false
-scheduler:
-  dynamics_type: ODE
-  replay_steps: [0, 5, 10, 15]  # real rollout transitions; all selects every step
-```
+| ART setting | Recipe value | Meaning |
+|---|---|---|
+| `train.trainer_type` | `art` | Select the ART trainer |
+| `data.sampler_type` | `rank_local` | Keep complete prompt groups on each logical DP replica |
+| `train.art_guidance_scale` | `1.0` | Scale the endpoint/reward direction in the target |
+| `train.art_kl_threshold` | `1.0e-5` | Trust-region threshold for the virtual reference metric |
+| `train.art_reference_noise_level` | `0.8` | Noise scale of that metric; generation remains ODE |
+| `scheduler.replay_steps` | `all` | Replay every recorded ODE transition |
 
 ART uses the shared [rollout replay selection](sampling.md), with `auto` selecting all ODE
 transitions. It requires nonempty replay data and retains the final latent for group guidance.
@@ -106,7 +90,7 @@ keeps the complete endpoint/reward group available for covariance calculation.
   directions, masks and timesteps. Modality-specific reward routing is a separate extension.
 - Full or LoRA policy tuning through the existing backend. TP/SP are model-owned; CP uses the
   shared full-output loss normalization and the model's admitted layout.
-- Selected rollout positions are sorted, unique and in range. Shared accelerators preserve the
+- Selected rollout positions are unique, in range and replayed in the requested order. Shared accelerators preserve the
   usual parity contract; rollout-only accelerators are rejected.
 - FP32 trajectory/callback storage is recommended to preserve the sampled anchor. Native compute precision and
   autocast remain model-owned; ART does not force RMSNorm or attention into a new precision mode.
@@ -150,7 +134,7 @@ four local derivatives under unchanged tolerances. That intervention does not cl
 uninterrupted trajectories or remove the production mask. Same-layout fresh replay and FLUX
 fixed-topology continuation remain exact assertions.
 
-## Official PickScore training candidate (8 GPUs)
+## Official PickScore recipe (8 GPUs)
 
 The [8-GPU recipe](../../examples/art/lora/sd3_5/pickscore_8gpu.yaml) maps the author's
 [pinned paper candidate](https://github.com/vanzll/DiffusionART/blob/a676204fb48fd4711c8903a8e63573c22998bb96/configs/paper/image/sd3_pickscore_art.yaml).
@@ -158,7 +142,7 @@ The upstream recipe itself does not certify historical curve reproduction.
 
 | Setting | Value |
 |---|---|
-| Model / reward | Pinned SD3.5 Medium / existing PickScore loader |
+| Model / reward | SD3.5 Medium / existing PickScore loader |
 | Adaptation | Attention LoRA rank 32, alpha 64, eight explicit projection targets |
 | Rollout | 512×512, CFG 1, 10 Euler ODE steps, scheduler shift 3 |
 | Group geometry | 64 prompts × 18 members / 8 DP ranks; batch 9; 16 batches/rank |
@@ -168,25 +152,25 @@ The upstream recipe itself does not certify historical curve reproduction.
 | Evaluation | Full 2,048-prompt test split, seed 42, 40 ODE steps, initially and every 25 acquisitions |
 | Checkpoint | Full state every 100 acquisitions and at completion |
 
-From the repository root, with access to the base-model license:
+Prepare `train.jsonl` and `test.jsonl` in `dataset/art_pickscore`, or set
+`data.datasets[0].dataset_dir` to their directory. Each line is a JSON object with a `prompt`
+field, as described in the [dataset guide](datasets.md). For the official recipe, use the
+[author's prompt dataset](https://huggingface.co/datasets/vanzl/DiffusionART-Prompts/tree/9d947fb510d67a8e5334ec1d8c7d8927f7658c08):
+25,432 training prompts and 2,048 test prompts, without truncating either split.
+
+From the repository root, with access to the base-model license and TensorBoard installed:
 
 ```bash
-python examples/art/lora/sd3_5/prepare_pickscore.py
-# Install tensorboard in the training environment for local curves and media.
 TORCH_ALLOW_TF32_CUBLAS_OVERRIDE=1 ff-train examples/art/lora/sd3_5/pickscore_8gpu.yaml
 ```
 
-The preparation script pins the SD3.5 checkpoint and verifies the source hashes
-of all 25,432 training and 2,048 test prompts. It writes ordinary prompt JSONL files without
-truncating the splits. The recipe reuses the existing SD3 adapter and PickScore loader without
-changing their preprocessing or asset-resolution behavior. The upstream candidate and the
-recorded experiment used a 128-token text limit; the existing SD3 adapter retains its native
-pipeline default of 256. The experiment's frozen source/config manifest records that difference.
-TensorBoard
-logs live under the configured save directory; multiply normalized PickScore by 26 when comparing
-with raw-score plots. Both reward paths quantize decoded images to RGB PIL before the CLIP processor. Native
-scheduler/RNG ordering and library versions still need to be recorded when comparing exact
-values, separately from learning trends.
+The configuration uses the public SD3.5 model ID and the standard multi-GPU Accelerate config.
+Its explicit `mixed_precision: fp16` and `num_processes: 8` override the launcher defaults.
+It reuses the existing SD3 adapter and PickScore loader. The upstream candidate uses a 128-token
+text limit; the existing adapter retains its native pipeline default of 256.
+TensorBoard logs live under the configured save directory; multiply normalized PickScore by 26
+when comparing with raw-score plots. Record the model revision, library versions and seeds for
+comparisons; experiment-specific observations and source snapshots belong in the PR evidence.
 
 This run uses the framework's acquisition counter: 500 cycles do not certify 1,000 successful
 updates if FP16 overflow skips a step. Review the update/overflow logs. The final checkpoint is

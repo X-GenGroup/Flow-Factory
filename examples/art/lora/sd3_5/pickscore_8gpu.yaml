@@ -1,10 +1,10 @@
 launcher: accelerate
-config_file: config/validation/backends/ddp.yaml
+config_file: config/accelerate_configs/multi_gpu.yaml
 num_processes: 8
 mixed_precision: fp16
 model:
   model_type: sd3-5
-  model_name_or_path: .scratch/art/assets/sd35
+  model_name_or_path: stabilityai/stable-diffusion-3.5-medium
   finetune_type: lora
   lora_rank: 32
   lora_alpha: 64

@@ -356,21 +356,6 @@ def test_adapter_admission_is_component_based(name):
     DiffusionARTTrainer.validate_adapter_class_execution_contract(cls)
 
 
-def test_documented_art_recipe(monkeypatch, tmp_path):
-    from pathlib import Path
-
-    import yaml
-
-    path = Path(__file__).resolve().parents[2] / "examples/art/lora/sd3_5/default.yaml"
-    values = yaml.safe_load(path.read_text())
-    values["log"]["save_dir"] = str(tmp_path / "saves")
-    monkeypatch.setenv("WORLD_SIZE", "2")
-    args = Arguments.from_dict(values)
-    DiffusionARTTrainer.validate_training_arguments_contract(args.training_args)
-    assert args.training_args.gradient_accumulation_steps == 16
-    assert args.data_args.sampler_type == "rank_local"
-
-
 def test_group_guidance_releases_each_temporary_cpu_trajectory():
     import weakref
     from types import SimpleNamespace

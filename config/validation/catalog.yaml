@@ -15860,9 +15860,7 @@ cases:
       Common-parameter intervention proves derivatives, not uninterrupted trajectory equality.
   artifacts:
   - tests/trainers/test_art.py
-  - examples/art/lora/sd3_5/default.yaml
   - examples/art/lora/sd3_5/pickscore_8gpu.yaml
-  - examples/art/lora/sd3_5/prepare_pickscore.py
   - tests/trainers/test_full_output_backward.py
   cost_seconds: 10
   resources:
