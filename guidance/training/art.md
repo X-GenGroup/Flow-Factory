@@ -65,6 +65,14 @@ The [recipe instructions below](#official-pickscore-recipe-8-gpus) describe the 
 | `train.art_kl_threshold` | `1.0e-5` | Trust-region threshold for the virtual reference metric |
 | `train.art_reference_noise_level` | `0.8` | Noise scale of that metric; generation remains ODE |
 | `scheduler.replay_steps` | `all` | Replay every recorded ODE transition |
+| `train.kl_beta` | `0` | Frozen-reference velocity MSE coefficient; `0` skips the reference forward |
+
+`train.kl_beta > 0` adds `kl_beta * mean((v - v_ref)^2)` at every replayed state, with
+`kl_type: v-based` as in GRPO. `v_ref` comes from the frozen reference under no-grad: the
+base weights with LoRA adapters disabled, or the initial full weights on `ref_param_device`.
+The term averages active coordinates per component and weights components equally. It is
+neither sigma weighted nor removed by the trust mask. It corresponds to the upstream H3
+`algorithm.options.loss.reference_mse_beta`, which uses `1e-3`.
 
 ART uses the shared [rollout replay selection](sampling.md), with `auto` selecting all ODE
 transitions. It requires nonempty replay data and retains the final latent for group guidance.
