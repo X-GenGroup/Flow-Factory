@@ -5,10 +5,12 @@ checks that the model, algorithm and resource layout can work together.
 
 | Guide | Use it to |
 |---|---|
+| [Feature overview](overview.md) | Choose models, paradigms, algorithms, tuning and backend responsibilities |
 | [Installation](installation.md) · [Loading and resume](configuration/loading-and-resume.md) | Choose a compatible environment and migrate checkpoints |
 | [Training workflow](training/workflow.md) | Follow data preparation, generation, feedback and optimization |
 | [Algorithms](training/algorithms.md) | Choose online learning, offline training or distillation |
 | [Datasets](training/datasets.md) · [Rewards](training/rewards.md) | Configure training inputs and feedback |
+| [Parallel quickstart](parallelism/quickstart.md) | Generate and launch complete 4/4/8-GPU SD3.5 SFT configurations |
 | [Parallel training](parallelism/README.md) | Understand DP, TP, SP and CP, then choose a GPU layout |
 | [Model coverage](parallelism/models.md) · [Algorithm coverage](parallelism/algorithms.md) | Check supported regions and composition limits |
 | [Precision](configuration/compute-precision.md) · [Acceleration](configuration/acceleration.md) | Set compute precision and optional accelerators |

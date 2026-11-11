@@ -1,13 +1,36 @@
 # CUDA training image
 
-## Current v0.5 preparation
+## Published v0.5.0 image
 
-The current recipe uses Python 3.12, CUDA 12.9, Torch 2.10.0, Accelerate 1.15.0 and Diffusers
-0.42.1, and installs a built Flow-Factory wheel. It is separate from the historical v0.2 image
-record below. See [installation](../guidance/installation.md) and
-[publishing](../docs/release/publishing.md) for immutable-commit previews, post-merge release
-publication, image/package identity and durable evidence. No v0.5 image is implied by this source.
+The [v0.5.0 release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0) publishes the
+CUDA training image built from source and recipe commit `ced2cd9b0465a2c9d733b9b8aed4d4351f950a22`.
+It uses Python 3.12, CUDA 12.9, Torch 2.10.0, Accelerate 1.15.0 and Diffusers 0.42.1, and installs
+a built Flow-Factory wheel. Its release evidence bundle records this registry digest:
 
+```bash
+docker pull ghcr.io/x-gengroup/flow-factory@sha256:d11cf62a22622f570111225bd18af797f4fe3505bad11f8ea4ad461d400610c4
+# Versioned alias:
+docker pull ghcr.io/x-gengroup/flow-factory:0.5.0
+
+docker run --rm -it --gpus all --ipc=host \
+  -v /path/to/configs:/configs:ro \
+  -v /path/to/outputs:/outputs \
+  -v /path/to/huggingface:/cache/huggingface \
+  -e HF_HOME=/cache/huggingface \
+  ghcr.io/x-gengroup/flow-factory:0.5.0 \
+  ff-train /configs/train.yaml
+```
+
+Set output paths under `/outputs`; weights and optional reward services are not bundled. Use an
+NVIDIA driver compatible with the image's CUDA runtime and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+See [parallel training](../guidance/parallelism/quickstart.md), [installation](../guidance/installation.md)
+and [publishing](../docs/release/publishing.md) for layout constraints, current-source environments
+and artifact verification. The later v0.5.1 source tag and main's Torch 2.10–2.14 work do not
+replace this image or its pinned dependencies. Prefer a digest for an immutable deployment;
+`latest` is a moving alias.
+
+## Historical v0.2.0 environment
 
 The published v0.2.0 image contains Python 3.12, CUDA 12.9.1, PyTorch 2.10, the released Diffusers 0.41
 package, Accelerate, DeepSpeed, W&B and FFmpeg shared libraries. It targets Linux `amd64` with an
@@ -26,8 +49,8 @@ Pull the published image:
 docker pull ghcr.io/x-gengroup/flow-factory:0.2.0
 ```
 
-The `0.2.0` and `v0.2.0` aliases identify the same image. At publication, `latest` also points to
-it. For a fixed deployment identity, use
+The `0.2.0` and `v0.2.0` aliases identify the same image. At its original publication, `latest` also pointed to
+it; that historical observation does not identify the current `latest` image. For a fixed deployment identity, use
 `ghcr.io/x-gengroup/flow-factory@sha256:f83d18bc98e9b3a5c5ccf522b242519fd05b66643bf9606fe9c33612e9814e56`.
 
 Download the tested source build bundle and verification records from the
@@ -66,23 +89,25 @@ metadata still reports `0.1.0`; the container version and revision labels identi
 The build recipe is recorded separately because the source tag predates these packaging fixes.
 The release includes the recipe, source build bundle, resolved packages and verification record.
 
-TP requires FSDP2 and at least two FSDP shards. CP/EP remain future work. The released Diffusers
+In the v0.2.0 environment, TP requires FSDP2 and at least two FSDP shards; CP/EP were future work. The released Diffusers
 package does not include the pinned development APIs required by FLUX.3 and Qwen-Image 2.1; those
 adapters require their documented development environment. Bagel and reward-specific optional
 extras are also separate installs. See [the baseline limitations](https://github.com/X-GenGroup/Flow-Factory/blob/main/roadmap/milestones/v0.2.md).
 
 ## Verify an image
 
+The commands below use the current v0.5.0 image; the preceding v0.2.0 record is historical.
+
 The publish workflow runs the CPU check inside the built image with networking disabled. It tests
 CLI entry points, DeepSpeed/TorchCodec imports and a small SD3 denoiser forward/backward/update;
 it downloads no weights and is not a GPU training qualification matrix.
 
 ```bash
-docker run --rm --network none ghcr.io/x-gengroup/flow-factory:0.2.0 \
+docker run --rm --network none ghcr.io/x-gengroup/flow-factory:0.5.0 \
   python docker/smoke.py
 
 docker run --rm --network none --gpus 'device=0' \
-  ghcr.io/x-gengroup/flow-factory:0.2.0 \
+  ghcr.io/x-gengroup/flow-factory:0.5.0 \
   python docker/smoke.py --device cuda
 ```
 

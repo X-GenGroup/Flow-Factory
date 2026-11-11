@@ -4,6 +4,7 @@ Parallelism helps you process more independent samples or fit one sample's model
 across several GPUs. Flow-Factory combines data parallelism (DP), tensor parallelism (TP),
 sequence parallelism (SP) and context parallelism (CP).
 
+For a runnable entry point, use the [4/4/8-GPU quickstart](quickstart.md).
 Start with the concepts below, then [configure a layout](configuration.md), check your
 [model](models.md) and [algorithm](algorithms.md), and compare [costs and benefits](performance.md).
 
