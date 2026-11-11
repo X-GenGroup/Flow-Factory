@@ -99,6 +99,40 @@ def test_media_is_copied_before_the_caller_returns(tmp_path):
     assert len(run.seen_frames) == 1 and not run.seen_frames[0].any()
 
 
+def test_caller_only_copies_tensors_and_the_writer_converts_them(tmp_path, monkeypatch):
+    import torch
+
+    from flow_factory.logger.formatting import LogImage
+
+    converted_on = []
+    to_numpy, to_pil = LogVideo.to_numpy, LogImage.to_pil
+
+    def record_numpy(value):
+        converted_on.append(threading.current_thread().name)
+        return to_numpy(value)
+
+    def record_pil(value):
+        converted_on.append(threading.current_thread().name)
+        return to_pil(value)
+
+    monkeypatch.setattr(LogVideo, "to_numpy", staticmethod(record_numpy))
+    monkeypatch.setattr(LogImage, "to_pil", staticmethod(record_pil))
+    run = make_logger(tmp_path)
+    run.release.clear()
+    frames = torch.zeros(2, 3, 4, 4)
+    image = torch.zeros(3, 4, 4)
+    run.log_data({"samples": [LogVideo(frames)], "image": LogImage(image, compress=False)}, step=0)
+    frames.fill_(1.0)
+    image.fill_(1.0)
+    assert converted_on == []
+    run.release.set()
+    run.close()
+    assert converted_on and set(converted_on) == {"flow-factory-logger"}
+    assert not run.seen_frames[0].any()
+    logged_image = run.records[0][1]["image"]
+    assert not np.asarray(logged_image.get_pil()).any()
+
+
 def test_media_beyond_the_pending_limit_is_dropped_but_scalars_are_kept(tmp_path, monkeypatch):
     warnings = []
     monkeypatch.setattr(logger_abc.logger, "warning", warnings.append)

@@ -226,6 +226,24 @@ def _compute_resize_dims(
     return int(target_w / aspect), target_w
 
 
+def _owned_copy(value: Any) -> Any:
+    """Copy an image/video source without converting it; file paths are kept as-is."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, torch.Tensor):
+        return value.detach().to("cpu", copy=True)
+    if isinstance(value, np.ndarray):
+        return np.array(value, copy=True)
+    if isinstance(value, Image.Image):
+        return value.copy()
+    if isinstance(value, list):
+        return [_owned_copy(item) for item in value]
+    raise TypeError(
+        f"expected a path, tensor, ndarray, PIL image or list of them as media source, got "
+        f"{type(value).__name__}"
+    )
+
+
 def _resize_frames(arr: np.ndarray, height: int, width: int) -> np.ndarray:
     """Resize every (T, H, W, C) frame to ``height`` x ``width``."""
     return np.stack(
@@ -293,11 +311,13 @@ class LogImage:
         return self._img
 
     def materialize(self) -> None:
-        """Own a CPU copy so a background writer never reads the caller's tensors."""
-        if isinstance(self._value, str):
-            return
-        self._img = self.get_pil().copy()
-        self._value = self._img
+        """Own a CPU copy so a background writer never reads the caller's tensors.
+
+        Only copies; PIL conversion is left to the writer thread.
+        """
+        self._value = _owned_copy(self._value)
+        if self._img is not None:
+            self._img = self._img.copy()
 
     def get_size(self) -> Tuple[int, int]:
         """Get image dimensions as (height, width)."""
@@ -466,10 +486,13 @@ class LogVideo:
         return arr.shape[1], arr.shape[2]
 
     def materialize(self) -> None:
-        """Own CPU copies of frames and audio so a background writer never reads caller tensors."""
-        if not isinstance(self._value, str):
-            self._arr = np.array(self.get_numpy(), copy=True)
-            self._value = self._arr
+        """Own CPU copies of frames and audio so a background writer never reads caller tensors.
+
+        Only copies; uint8 conversion and encoding are left to the writer thread.
+        """
+        self._value = _owned_copy(self._value)
+        if self._arr is not None:
+            self._arr = np.array(self._arr, copy=True)
         if isinstance(self.audio, torch.Tensor):
             self.audio = self.audio.detach().to("cpu", copy=True)
 
