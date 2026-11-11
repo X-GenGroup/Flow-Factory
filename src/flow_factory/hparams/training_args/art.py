@@ -59,17 +59,31 @@ class ARTTrainingArguments(TrainingArguments):
         default=1e-5,
         metadata={"help": "Numerical floor for reward direction and transition variance."},
     )
+    kl_beta: float = field(
+        default=0.0,
+        metadata={
+            "help": "Coefficient of the frozen-reference velocity MSE; 0 disables the term "
+            "and its reference forward."
+        },
+    )
+    kl_type: Literal["v-based"] = field(
+        default="v-based",
+        metadata={"help": "Reference comparison space; ART regresses velocity, so 'v-based'."},
+    )
 
     def __post_init__(self) -> None:
         if self.trainer_type != "art":
             raise ValueError("ARTTrainingArguments requires trainer_type='art'")
         if type(self.group_size) is not int or self.group_size < 2:
             raise ValueError(f"ART requires group_size >= 2, received {self.group_size!r}")
+        if self.kl_type != "v-based":
+            raise ValueError(f"ART supports kl_type='v-based' only, received {self.kl_type!r}")
         for name in (
             "art_guidance_scale",
             "art_kl_threshold",
             "art_reference_noise_level",
             "art_epsilon",
+            "kl_beta",
         ):
             value = float(getattr(self, name))
             positive = name in ("art_reference_noise_level", "art_epsilon")

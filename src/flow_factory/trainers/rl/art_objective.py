@@ -70,6 +70,24 @@ def endpoint_guidance(
     return direction / rms.clamp_min(epsilon).reshape(-1, *([1] * (x.ndim - 1)))
 
 
+def reference_velocity_mse(
+    velocity: torch.Tensor,
+    reference_velocity: torch.Tensor,
+    active_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Per-sample mean squared distance from the frozen reference velocity.
+
+    Unlike the ART regression term, it is neither sigma weighted nor trust masked.
+    """
+    if velocity.shape != reference_velocity.shape:
+        raise ValueError(
+            "ART reference velocity must match the policy velocity shape; received "
+            f"{tuple(reference_velocity.shape)} versus {tuple(velocity.shape)}"
+        )
+    difference = velocity.float() - reference_velocity.detach().float()
+    return _mean(difference.square(), active_mask)
+
+
 def art_objective(
     velocity: torch.Tensor,
     old_velocity: torch.Tensor,

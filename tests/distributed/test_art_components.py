@@ -100,6 +100,9 @@ def _worker(rank, store_path, result_dir, options):
         for f in fields(original.training_args):
             if not f.init:
                 c["train"].pop(f.name, None)
+        # The source recipe's reference KL settings are GRPO's; ART keeps its own defaults.
+        c["train"].pop("kl_type", None)
+        c["train"].pop("kl_beta", None)
         c["train"].update(
             trainer_type="art",
             ema_decay=0.0,
