@@ -29,7 +29,7 @@ from flow_factory.scheduler import (
     load_scheduler,
 )
 from flow_factory.trainers.abc import BaseTrainer
-from flow_factory.utils.trajectory_collector import TrajectoryCollector
+from flow_factory.utils.trajectory_collector import TrajectoryCollector, compute_trajectory_indices
 
 SCHEDULERS = (FlowMatchEulerDiscreteSDEScheduler, UniPCMultistepSDEScheduler, MiniMaxH3SDEScheduler)
 
@@ -68,19 +68,18 @@ def test_selection_and_storage_do_not_change_noise_or_schedule(cls, dynamics, se
         )
         assert selected.train_timesteps.tolist() == expected
         expected_states = sorted({j for i in expected for j in (i, i + 1)})
-        assert selected.get_trajectory_indices() == (expected_states or None)
-        assert selected.get_trajectory_indices(include_terminal=True) == sorted(
-            set(expected_states) | {6}
-        )
-        collector = TrajectoryCollector(selected.get_trajectory_indices(), total_steps=6)
+        states = compute_trajectory_indices(selected.train_timesteps, 6)
+        assert states == expected_states
+        assert compute_trajectory_indices(
+            selected.train_timesteps, 6, include_terminal=True
+        ) == sorted(set(expected_states) | {6})
+        collector = TrajectoryCollector(states, total_steps=6)
         for i in range(7):
             collector.collect(torch.tensor([i]), i)
         assert collector.collected_indices == expected_states
         if expected_states:
             index_map = collector.get_index_map()
             assert [int(index_map[i]) for i in expected_states] == list(range(len(expected_states)))
-        else:
-            assert collector.get_result() is None and collector.get_index_map() is None
 
 
 def parse(algorithm="art", selection="auto", *, training_values=None, **scheduler_values):

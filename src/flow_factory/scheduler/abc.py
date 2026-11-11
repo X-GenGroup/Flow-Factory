@@ -21,7 +21,6 @@ import torch
 from diffusers.utils.outputs import BaseOutput
 
 from ..contracts.replay import ReplaySteps, resolve_replay_steps, validate_replay_steps
-from ..utils.trajectory_collector import compute_trajectory_indices
 
 
 def stable_mean_except_batch(values: torch.Tensor) -> torch.Tensor:
@@ -248,19 +247,6 @@ class SDESchedulerMixin(ABC):
         return torch.tensor(
             resolve_replay_steps(self.replay_steps, num_steps, default), dtype=torch.int64
         )
-
-    def get_trajectory_indices(self, *, include_terminal: bool = False) -> list[int] | None:
-        """Return minimal state positions for replay, or None when recording is off.
-
-        Transition ``i`` needs states ``i`` and ``i+1``. An objective may also
-        require the terminal state, independently of transition retention.
-        Endpoint re-noising trainers already request only that state; their
-        sampled training coordinates are not rollout replay indices.
-        """
-        indices = compute_trajectory_indices(
-            self.train_timesteps, len(self.timesteps), include_terminal=include_terminal
-        )
-        return indices or None
 
     @abstractmethod
     def get_train_timesteps(self) -> torch.Tensor:

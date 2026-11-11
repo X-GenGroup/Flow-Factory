@@ -30,7 +30,7 @@ owners:
     reason: Removing constructor count caches preserves shared GRPO/Guard/DPPO configuration and actual replay indices.
   - paths: [src/flow_factory/scheduler/abc.py, src/flow_factory/scheduler/flow_match_euler_discrete.py,
             src/flow_factory/scheduler/unipc_multistep.py, src/flow_factory/scheduler/minimax_h3.py]
-    symbols: ['<module>', SDESchedulerMixin, '*.train_timesteps', '*.get_trajectory_indices', '*.set_replay_steps', '*.__init__']
+    symbols: ['<module>', SDESchedulerMixin, '*.train_timesteps', '*.set_replay_steps', '*.__init__']
     requires: [scheduler.replay.contracts, scheduler.replay.coupled, algorithm.art.flux_lifecycle, algorithm.art.av_stream]
     reason: Shared selection must preserve all registered schedule/noise producers, component alignment and both replay objectives; numerical step kernels remain separate owners.
   - paths: [src/flow_factory/scheduler/loader.py]
