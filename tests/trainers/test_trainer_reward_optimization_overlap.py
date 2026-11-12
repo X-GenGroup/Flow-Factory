@@ -79,6 +79,7 @@ def test_only_declared_trainers_expose_reward_optimization_overlap() -> None:
     }
 
     assert supported == {
+        "art",
         "awm",
         "crd",
         "dgpo",

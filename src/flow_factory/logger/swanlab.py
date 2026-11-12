@@ -25,6 +25,12 @@ logger = setup_logger(__name__)
 
 
 class SwanlabLogger(Logger):
+    # swanlab.Video accepts GIF only; RecordBuilder drops items above 10 MiB and keeps at
+    # most 108 items per key and step (swanlab 0.10 _MEDIA_MAX_SIZE / _MEDIA_MAX_LENGTH).
+    video_format = "gif"
+    platform_media_max_bytes = 10 * 1024**2
+    platform_media_max_items = 108
+
     def _init_platform(self):
         swanlab.init(
             project=self.config.log_args.project,
@@ -40,7 +46,8 @@ class SwanlabLogger(Logger):
             return swanlab.Image(value.get_value(height, width), caption=value.caption)
 
         if isinstance(value, LogVideo):
-            return swanlab.Video(value.get_value("gif", height, width), caption=value.caption)
+            path = self._video_path(value, height, width)
+            return None if path is None else swanlab.Video(path, caption=value.caption)
 
         if isinstance(value, LogTable):
             # SwanLab does not support Table natively, convert to dict of column lists
@@ -58,3 +65,6 @@ class SwanlabLogger(Logger):
 
     def _log_impl(self, data: Dict, step: int):
         self.platform.log(data, step=step)
+
+    def _finish_platform(self) -> None:
+        self.platform.finish()

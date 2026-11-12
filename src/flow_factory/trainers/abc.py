@@ -1120,6 +1120,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 verbose=self.log_args.verbose,
                 source_id_to_name=self.config.data_args.source_id_to_name,
                 group_coordinator=self.group_coordinator,
+                max_logged_samples=self.log_args.max_logged_train_samples,
             )
 
         # Per-eval-dataset reward processors and buffers: the loop below builds
@@ -3746,9 +3747,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
     # ============================ Shutdown ============================
 
     def cleanup(self, *, wait: bool = False) -> None:
-        """Close every owned reward buffer, including after partial construction.
+        """Close every owned reward buffer and the run logger, including after partial construction.
 
-        ``start()`` drains workers on success or ordinary failure. The default
+        ``start()`` drains workers and the logger queue on success or ordinary failure. The default
         preserves the CLI's nonblocking interrupt path: running Python requests
         cannot be forcibly cancelled, so that caller follows with ``os._exit()``.
         A later ``cleanup(wait=True)`` can join a previous nonblocking shutdown.
@@ -3761,6 +3762,13 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 continue
             try:
                 buf.shutdown(wait=wait, cancel_futures=True)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        run_logger = getattr(self, "logger", None)
+        if run_logger is not None:
+            try:
+                run_logger.close(wait=wait)
             except BaseException as error:
                 if first_error is None:
                     first_error = error

@@ -377,6 +377,10 @@ class LoggerFake:
         self.events.append("log")
         self.payloads.append((step, dict(data)))
 
+    def close(self, *, wait: bool = True) -> None:
+        """Record the trainer's end-of-run logger shutdown."""
+        self.closed_with = wait
+
 
 def _samples(sources: List[Optional[str]], values: List[float], num_steps: int) -> List[BaseSample]:
     """Rollout samples whose stored trajectory covers ``num_steps`` transitions."""

@@ -16220,3 +16220,55 @@ cases:
       PYTHONFAULTHANDLER: '1'
       TOKENIZERS_PARALLELISM: 'false'
     model_paths: []
+- id: logger-contracts
+  covers:
+  - logging.contracts
+  facets:
+  - runtime_state
+  - feedback
+  owners:
+  - src/flow_factory/logger/**
+  - src/flow_factory/hparams/log_args.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -W
+  - error::pytest.PytestUnraisableExceptionWarning
+  - tests/logger
+  fixture: Recording backend with a gated converter, stub W&B/SwanLab/TensorBoard modules and synthetic moving clips encoded by the real GIF/MP4 writers.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    reward: none
+    description: FIFO step order without blocking the caller, owned media copies, bounded media backlog with kept scalars,
+      writer errors raised on the caller, drain/discard shutdown, per-backend containers and budgets, measured
+      frame-rate-first fitting that keeps duration, and skipped videos that cannot meet their floors.
+  artifacts:
+  - tests/logger/test_async_logging.py
+  - tests/logger/test_tensorboard_resize.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages:
+    - pytest
+    - torch
+    - numpy
+    - Pillow
+    - imageio
+    - av
+    environment:
+      OMP_NUM_THREADS: '1'
+      CUDA_VISIBLE_DEVICES: '-1'
+    model_paths: []

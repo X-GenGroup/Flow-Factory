@@ -240,6 +240,7 @@ def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
     supported = {
         "sft",
         "offline-dpo",
+        "art",
         "grpo",
         "grpo-guard",
         "dppo",

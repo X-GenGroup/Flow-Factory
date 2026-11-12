@@ -24,6 +24,9 @@ from .formatting import LogImage, LogTable, LogVideo, _compute_resize_dims
 
 
 class TensorboardLogger(Logger):
+    # TensorBoard renders video summaries as animated GIF images.
+    video_format = "gif"
+
     def _init_platform(self):
         # Store under <log_args.save_dir>/tensorboard/<run_name>
         log_dir = (
@@ -49,19 +52,9 @@ class TensorboardLogger(Logger):
             return ("image", arr, value.caption)
 
         if isinstance(value, LogVideo):
-            # TensorBoard expects NTCHW format, N=1 for single video
-            arr = value.get_numpy()  # THWC
-            if height or width:
-                h, w = arr.shape[1], arr.shape[2]
-                new_h, new_w = _compute_resize_dims(h, w, height, width)
-                resized = [
-                    np.array(Image.fromarray(f).resize((new_w, new_h), Image.Resampling.LANCZOS))
-                    for f in arr
-                ]
-                arr = np.stack(resized)
-            # THWC -> 1TCHW, normalize to [0,1]
-            vid = np.transpose(arr, (0, 3, 1, 2))[np.newaxis] / 255.0
-            return ("video", vid, value.caption, value.fps)
+            # Encode the GIF here rather than through SummaryWriter.add_video, which needs moviepy.
+            path = self._video_path(value, height, width)
+            return None if path is None else ("video", path, value.caption)
 
         if isinstance(value, LogTable):
             # No native table support - flatten items; `_log_single` logs each one separately
@@ -98,7 +91,17 @@ class TensorboardLogger(Logger):
         elif dtype == "image":
             self.platform.add_image(key, args[0], step, dataformats="HWC")
         elif dtype == "video":
-            self.platform.add_video(key, args[0], step, fps=args[2])
+            from tensorboard.compat.proto.summary_pb2 import Summary
+
+            with open(args[0], "rb") as f:
+                encoded = f.read()
+            width, height = Image.open(args[0]).size
+            image = Summary.Image(
+                height=height, width=width, colorspace=3, encoded_image_string=encoded
+            )
+            self.platform.file_writer.add_summary(
+                Summary(value=[Summary.Value(tag=key, image=image)]), step
+            )
         elif dtype == "table":
             # Log table items individually
             items, columns = args
@@ -107,6 +110,9 @@ class TensorboardLogger(Logger):
                 row_idx = i // len(columns)
                 self._log_single(f"{key}/{columns[col_idx]}/{row_idx}", item, step)
 
+    def _finish_platform(self) -> None:
+        self.platform.close()
+
     def __del__(self):
-        if hasattr(self, "platform"):
+        if hasattr(self, "platform") and not getattr(self, "_closed", False):
             self.platform.close()

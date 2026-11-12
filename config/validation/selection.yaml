@@ -49,6 +49,10 @@ owners:
     requires: [repository.consistency, execution.contracts, optimization.full_output_backward]
     reason: Registration/export declarations must agree across all resolved trainers and arguments;
       changed resolver functions remain separate unmapped owners requiring review.
+  - paths: [src/flow_factory/logger/**, src/flow_factory/hparams/log_args.py, tests/logger/**]
+    requires: [logging.contracts]
+    reason: Every backend shares one background writer, media snapshot and budget-fitting path; logging never
+      changes training numerics.
   - paths: [examples/art/**]
     requires: [repository.consistency, algorithm.art.contracts]
     reason: Parse the user ART recipe through production arguments and verify its logical update geometry.

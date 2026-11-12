@@ -73,7 +73,71 @@ class LogArguments(ArgABC):
         metadata={"help": "Whether to print detailed progress during training."},
     )
 
+    async_logging: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "Write every log call from one background thread in FIFO order, so the "
+                "training thread only formats and enqueues. Steps keep their call order."
+            )
+        },
+    )
+    media_max_pending: int = field(
+        default=2,
+        metadata={
+            "help": (
+                "Media-bearing log calls that may be queued or encoding at once. Media of a "
+                "further call is dropped with a warning; its scalars are still logged."
+            )
+        },
+    )
+    media_max_bytes: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Per-video size budget in bytes. None uses the backend's own limit "
+                "(SwanLab: 10 MiB; W&B and TensorBoard: unlimited)."
+            )
+        },
+    )
+    media_min_fps: float = field(
+        default=8.0,
+        metadata={
+            "help": "Lowest frame rate a video may be subsampled to when fitting its budget."
+        },
+    )
+    media_min_side: int = field(
+        default=128,
+        metadata={"help": "Smallest short side, in pixels, a video may be resized to."},
+    )
+    max_logged_train_samples: int = field(
+        default=30,
+        metadata={"help": "Training samples logged as media per acquisition; 0 disables them."},
+    )
+
     def __post_init__(self):
+        if not isinstance(self.async_logging, bool):
+            raise TypeError(
+                f"log.async_logging must be a bool, got {type(self.async_logging).__name__}: "
+                f"{self.async_logging!r}"
+            )
+        for name, minimum in (
+            ("media_max_pending", 1),
+            ("media_min_side", 1),
+            ("max_logged_train_samples", 0),
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or value < minimum:
+                raise ValueError(f"log.{name} must be an int >= {minimum}, got {value!r}")
+        if self.media_max_bytes is not None and (
+            type(self.media_max_bytes) is not int or self.media_max_bytes <= 0
+        ):
+            raise ValueError(
+                f"log.media_max_bytes must be a positive int or null, got {self.media_max_bytes!r}"
+            )
+        self.media_min_fps = float(self.media_min_fps)
+        if not self.media_min_fps > 0:
+            raise ValueError(f"log.media_min_fps must be positive, got {self.media_min_fps!r}")
 
         # Expand path to user's path
         self.save_dir = os.path.expanduser(self.save_dir)

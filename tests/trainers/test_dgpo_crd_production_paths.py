@@ -27,8 +27,8 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 import torch
-
 from diffusers.utils.torch_utils import randn_tensor
+
 from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import BaseSample, ComponentTimes, LatentState
 from flow_factory.scheduler import SDESchedulerOutput
@@ -285,6 +285,10 @@ class LoggerFake:
         """Record one logged payload."""
         self.events.append("log")
         self.payloads.append((step, dict(data)))
+
+    def close(self, *, wait: bool = True) -> None:
+        """Record the trainer's end-of-run logger shutdown."""
+        self.closed_with = wait
 
 
 def _samples(
