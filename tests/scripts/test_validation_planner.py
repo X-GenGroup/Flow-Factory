@@ -1447,6 +1447,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "refl-sd35-ddp",
+                "refl-flux-tp-cp",
+                "refl-real-pickscore-cuda",
                 "scheduler-replay-flux-native",
                 "art-av-stream-native",
                 "art-flux-ddp-native",
@@ -2019,6 +2022,9 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_sft_fixture.py",
             {
+                "refl-sd35-ddp",
+                "refl-flux-tp-cp",
+                "refl-real-pickscore-cuda",
                 "scheduler-replay-flux-native",
                 "art-flux-ddp-native",
                 "native-attention-runtime",
@@ -4512,3 +4518,38 @@ def test_differentiable_reward_admission_selects_focused_contracts():
     assert "execution.contracts" in text
     assert "review.owner:" not in text
     assert "overlap.loop" not in text
+
+
+def test_refl_decoder_declarations_select_derivatives_without_reopening_model_plans():
+    """Explicit decoder declarations retain native derivative and lifecycle witnesses."""
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    semantic = {
+        "src/flow_factory/models/abc.py": [
+            "BaseAdapter.differentiable_decode_fields",
+            "BaseAdapter.decode_differentiable_state",
+        ],
+        "src/flow_factory/models/flux/flux1.py": ["Flux1Adapter.differentiable_decode_fields"],
+        "src/flow_factory/models/stable_diffusion/sd3_5.py": [
+            "SD3_5Adapter.differentiable_decode_fields"
+        ],
+    }
+    scope = {
+        "paths": list(semantic),
+        "semantic_symbols": semantic,
+        "scope_complete": True,
+        "facets": [],
+        "uninspected": [],
+    }
+    required = planner.infer_requirements(scope, policy, semantic)
+    text = str(required)
+    assert all(
+        key in text
+        for key in [
+            "algorithm.refl.contracts",
+            "algorithm.refl.ddp",
+            "algorithm.refl.tp_cp",
+            "algorithm.refl.real_reward",
+        ]
+    )
+    assert "review.owner:" not in text
+    assert "parallel.tp_parity" not in text
