@@ -20,6 +20,7 @@ from typing import Any, Protocol
 from torch.utils.data import DataLoader, DistributedSampler
 
 from ..contracts.execution import (
+    DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT,
     OFFLINE_EXECUTION_CONTRACT,
     ONLINE_EXECUTION_CONTRACT,
     ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT,
@@ -299,6 +300,7 @@ def _require_progress(progress: object) -> None:
 
 
 __all__ = [
+    "DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT",
     "AcquisitionDriver",
     "AcquisitionHost",
     "AcquisitionMode",

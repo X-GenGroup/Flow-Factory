@@ -4483,3 +4483,32 @@ def test_replay_policy_retains_all_factory_and_endpoint_sampling_controls():
         "tests/distributed/flux_replay_selection_fixture.py",
         "tests/distributed/context_parallel_overlap_runner.py",
     } <= set(native["artifacts"])
+
+
+def test_differentiable_reward_admission_selects_focused_contracts():
+    """Additive derivative declarations keep execution and gradient proof obligations."""
+    policy = yaml.safe_load((ROOT / "config/validation/selection.yaml").read_text())
+    semantic = {
+        "src/flow_factory/trainers/abc.py": ["BaseTrainer._init_reward_model"],
+        "src/flow_factory/hparams/args.py": [
+            "Arguments._validate_training_feedback_contract",
+            "Arguments._validate_every_source_has_a_reward",
+        ],
+        "src/flow_factory/hparams/training_args/_base.py": [
+            "TrainingArguments.reward_gradient_fields"
+        ],
+    }
+    scope = {
+        "paths": list(semantic),
+        "semantic_symbols": semantic,
+        "scope_complete": True,
+        "facets": [],
+        "docs_only_paths": [],
+        "uninspected": [],
+    }
+    required = planner.infer_requirements(scope, policy, semantic)
+    text = str(required)
+    assert "feedback.differentiable.contracts" in text
+    assert "execution.contracts" in text
+    assert "review.owner:" not in text
+    assert "overlap.loop" not in text

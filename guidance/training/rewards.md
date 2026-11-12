@@ -641,3 +641,36 @@ Use Remote Reward Server **only when reward model dependencies conflict with Flo
 | VLM-based reward, **incompatible** dependencies | Use this **Remote Reward Server** pattern (isolated process), or run the judge on another host and call it from a custom reward that matches that contract. |
 | Closed-source API | Use `requests`, OpenAI SDK and official SDK directly in `__call__()` |
 | Compatible dependencies | Implement as standard `PointwiseRewardModel` |
+
+## Input-gradient capabilities
+
+Reward implementations declare `gradient_capability` using the immutable
+`RewardGradientCapability(input_fields=("image",))` contract. The capability describes
+which media inputs retain derivatives through the complete scoring path. Existing
+`use_tensor_inputs` describes representation only. Pointwise/groupwise declarations
+continue to describe sample dependence.
+
+PickScore supports image input gradients through `score_differentiable(prompt=..., image=...)`.
+Its input is floating BCHW RGB in [0, 1]. Resize, center crop and normalization run in
+Torch using the processor's geometry and normalization. Scores retain the existing
+logit scale and /26 normalization. Tensor bicubic interpolation and ordinary PIL scoring
+have a small preprocessing difference due to PIL quantization.
+
+Algorithms declare `FeedbackMode.DIFFERENTIABLE_REWARD` and their required
+`reward_gradient_fields`. Configuration checks these against reward class declarations
+before model construction. Optimization-stage scoring runs synchronously, freezes scorer
+parameters in eval mode and retains derivatives to input media. The algorithm owns the
+loss transform and reduction. Its training `rewards` must all support the requested
+fields. Put OCR, remote API and other observation-only scores in `eval_rewards`.
+
+`DifferentiableRewardProcessor` reuses configured source applicability, batch sizes and
+weights. It returns aligned scores and weights, with zeros outside applicability, while
+preserving the autograd graph. The first implementation dispatches pointwise scorers.
+Groupwise differentiable scoring requires a complete-group implementation before admission.
+Ordinary GRPO/ART scoring continues through the existing runtime reward processor, including
+when the selected scorer also advertises input gradients.
+
+Custom scorers override `score_differentiable`, declare supported fields and return one
+finite Tensor score per input. Freeze network weights while allowing autograd through
+its inputs. Test finite differences, tail batches, input gradients, detached negative
+controls and ordinary-score parity. Keep media transformations in Torch throughout.

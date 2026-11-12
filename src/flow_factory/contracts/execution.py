@@ -29,6 +29,7 @@ class FeedbackMode(str, Enum):
     """Describe whether an acquisition requires runtime reward feedback."""
 
     RUNTIME_REWARD = "runtime_reward"
+    DIFFERENTIABLE_REWARD = "differentiable_reward"
     NONE = "none"
 
 
@@ -65,6 +66,12 @@ ONLINE_EXECUTION_CONTRACT = ExecutionContract(
     feedback=FeedbackMode.RUNTIME_REWARD,
 )
 
+DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT = ExecutionContract(
+    acquisition=AcquisitionMode.GENERATION,
+    feedback=FeedbackMode.DIFFERENTIABLE_REWARD,
+)
+
+
 ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT = ExecutionContract(
     acquisition=AcquisitionMode.GENERATION,
     feedback=FeedbackMode.NONE,
@@ -77,6 +84,7 @@ OFFLINE_EXECUTION_CONTRACT = ExecutionContract(
 
 
 __all__ = [
+    "DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT",
     "AcquisitionMode",
     "ExecutionContract",
     "FeedbackMode",

@@ -16272,3 +16272,105 @@ cases:
       OMP_NUM_THREADS: '1'
       CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
+- facets:
+  - feedback
+  owners:
+  - src/flow_factory/rewards/differentiable.py
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Model capability admission, source routing and independent input
+      derivatives.
+    reward: varying
+  artifacts:
+  - tests/rewards/test_differentiable_reward.py
+  - src/flow_factory/rewards/differentiable.py
+  - src/flow_factory/rewards/tensor_preprocessing.py
+  - src/flow_factory/contracts/reward.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  id: differentiable-reward-contracts
+  covers:
+  - feedback.differentiable.contracts
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/rewards/test_differentiable_reward.py
+  - -k
+  - not cuda
+  fixture: Native Torch frozen linear scorer, finite differences and source-specific
+    full/tail batches.
+- facets:
+  - feedback
+  owners:
+  - src/flow_factory/rewards/differentiable.py
+  fixture_kind: pretrained_weights
+  qa: Q3
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Nonzero finite image derivatives, frozen weights and ordinary-score
+      tolerance.
+    reward: varying
+  artifacts:
+  - tests/rewards/test_differentiable_reward.py
+  - src/flow_factory/rewards/differentiable.py
+  - src/flow_factory/rewards/tensor_preprocessing.py
+  - src/flow_factory/contracts/reward.py
+  cost_seconds: 15
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - transformers
+    - diffusers
+    - accelerate
+    - pytest
+    environment:
+      FF_TEST_REAL_REWARD: '1'
+      HF_HUB_OFFLINE: '1'
+      OMP_NUM_THREADS: '2'
+    model_paths:
+    - yuvalkirstain/PickScore_v1
+  id: differentiable-pickscore-cuda
+  covers:
+  - feedback.differentiable.pickscore
+  fixture: PickScore a4e4367c6dfa7288a00c550414478f865b875800 with cached CLIP processor;
+    image derivative and ordinary-score comparison.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/rewards/test_differentiable_reward.py::test_cuda_real_pickscore_input_gradient

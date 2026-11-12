@@ -21,6 +21,7 @@ from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
 from transformers.utils.generic import ModelOutput
 
+from ..contracts.reward import RewardGradientCapability
 from ..hparams import *
 from .abc import GroupwiseRewardModel, PointwiseRewardModel, RewardModelOutput
 
@@ -42,6 +43,7 @@ def _extract_feature_tensor(output: Any) -> torch.Tensor:
 
 
 class PickScoreRewardModel(PointwiseRewardModel):
+    gradient_capability = RewardGradientCapability(input_fields=("image",))
     required_fields = ("prompt", "image", "video")
 
     def __init__(self, config: RewardArguments, accelerator: Accelerator):
@@ -50,6 +52,29 @@ class PickScoreRewardModel(PointwiseRewardModel):
         model_path = "yuvalkirstain/PickScore_v1"
         self.processor = CLIPProcessor.from_pretrained(processor_path)
         self.model = CLIPModel.from_pretrained(model_path).eval().to(self.device)
+
+    def score_differentiable(self, *, prompt: list[str], image: torch.Tensor) -> RewardModelOutput:
+        """Score BCHW floating RGB pixels in [0, 1], preserving image gradients.
+
+        Tensor bicubic interpolation avoids PIL quantization. The ordinary PIL
+        path remains the evaluation reference, with its own quantization tolerance.
+        Scores use the same logit scale and /26 normalization as ordinary scoring.
+        """
+        from .tensor_preprocessing import clip_image_preprocess
+
+        pixels = clip_image_preprocess(image, self.processor.image_processor)
+        pixels = pixels.to(device=self.device, dtype=self.model.dtype)
+        text = self.processor(
+            text=prompt, padding=True, truncation=True, max_length=77, return_tensors="pt"
+        )
+        text = {key: value.to(self.device) for key, value in text.items()}
+        with torch.no_grad():
+            text_embs = _extract_feature_tensor(self.model.get_text_features(**text))
+            text_embs = torch.nn.functional.normalize(text_embs, dim=-1)
+        image_embs = _extract_feature_tensor(self.model.get_image_features(pixel_values=pixels))
+        image_embs = torch.nn.functional.normalize(image_embs, dim=-1)
+        scores = self.model.logit_scale.exp() * (text_embs * image_embs).sum(-1) / 26
+        return RewardModelOutput(rewards=scores)
 
     def _compute_scores_batch(
         self,
