@@ -16374,3 +16374,233 @@ cases:
   - -q
   - -s
   - tests/rewards/test_differentiable_reward.py::test_cuda_real_pickscore_input_gradient
+- facets:
+  - objective
+  - feedback
+  owners:
+  - src/flow_factory/trainers/rl/refl.py
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Closed-form gradient, two policy updates, invalid solver/media/reward
+      admission and recipe parsing.
+    reward: varying
+  artifacts:
+  - tests/trainers/test_refl.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  id: refl-contracts
+  covers:
+  - algorithm.refl.contracts
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/trainers/test_refl.py
+  fixture: Independent CPU clean-prediction derivative and production optimize controls;
+    registry, decoder and reward admission.
+- facets:
+  - objective
+  - feedback
+  owners:
+  - src/flow_factory/trainers/rl/refl.py
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Independent reward derivative and real optimizer updates with frozen
+      auxiliary weights.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/conftest.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/flux_sft_fixture.py
+  cost_seconds: 60
+  resources:
+    gpus: 2
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+  id: refl-sd35-ddp
+  covers:
+  - algorithm.refl.ddp
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_training.py::test_cuda_sd35_refl_ddp_resume
+  fixture: Native SD3.5 Medium blocks, small random text/VAE weights and differentiable
+    pixel scorer; two cycles and fresh-process continuation.
+- facets:
+  - objective
+  - feedback
+  owners:
+  - src/flow_factory/trainers/rl/refl.py
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Independent reward derivative and real optimizer updates with frozen
+      auxiliary weights.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/conftest.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/flux_sft_fixture.py
+  cost_seconds: 120
+  resources:
+    gpus: 8
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+  id: refl-flux-tp-cp
+  covers:
+  - algorithm.refl.tp_cp
+  execution_capability: flux-refl-cp-v1
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_training.py::test_cuda_flux_refl_tp_sp_cp
+  fixture: Native dual/single-stream Flux, replicated VAE/scorer; independent two-cycle
+    BF16 runs and fixed-state/parameter derivative controls.
+- facets:
+  - objective
+  - feedback
+  owners:
+  - src/flow_factory/trainers/rl/refl.py
+  fixture_kind: pretrained_weights
+  qa: Q3
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Independent reward derivative and real optimizer updates with frozen
+      auxiliary weights.
+    reward: varying
+  artifacts:
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/conftest.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/test_refl_real_reward.py
+  - examples/refl/lora/sd3_5/pickscore.yaml
+  cost_seconds: 60
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+      FF_TEST_REAL_REWARD: '1'
+      HF_HUB_OFFLINE: '1'
+    model_paths:
+    - yuvalkirstain/PickScore_v1
+  id: refl-real-pickscore-cuda
+  covers:
+  - algorithm.refl.real_reward
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_real_reward.py
+  fixture: Native tiny SD3.5 with cached pretrained PickScore a4e4367c6dfa7288a00c550414478f865b875800;
+    two real reward-to-policy updates.

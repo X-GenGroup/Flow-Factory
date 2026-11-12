@@ -31,6 +31,7 @@ from .grpo import GRPOTrainingArguments
 from .nft import NFTTrainingArguments
 from .offline_dpo import OfflineDPOTrainingArguments
 from .opd import DiffusionOPDTrainingArguments
+from .refl import ReFLTrainingArguments
 from .sft import SFTTrainingArguments
 from .tdm import TDMTrainingArguments
 from .tdm_r1 import TDMR1TrainingArguments
@@ -45,6 +46,7 @@ _TRAINING_ARGS_REGISTRY: Dict[str, Type[TrainingArguments]] = {
     "dppo": DPPOTrainingArguments,
     "nft": NFTTrainingArguments,
     "art": ARTTrainingArguments,
+    "refl": ReFLTrainingArguments,
     "awm": AWMTrainingArguments,
     "dgpo": DGPOTrainingArguments,
     "dpo": DPOTrainingArguments,

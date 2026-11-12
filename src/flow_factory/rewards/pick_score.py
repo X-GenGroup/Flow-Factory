@@ -20,6 +20,7 @@ from accelerate import Accelerator
 from PIL import Image
 from transformers import CLIPModel, CLIPProcessor
 from transformers.utils.generic import ModelOutput
+from transformers.utils.hub import cached_file, extract_commit_hash
 
 from ..contracts.reward import RewardGradientCapability
 from ..hparams import *
@@ -52,6 +53,12 @@ class PickScoreRewardModel(PointwiseRewardModel):
         model_path = "yuvalkirstain/PickScore_v1"
         self.processor = CLIPProcessor.from_pretrained(processor_path)
         self.model = CLIPModel.from_pretrained(model_path).eval().to(self.device)
+        self.resolved_model_revision = extract_commit_hash(
+            cached_file(model_path, "config.json", local_files_only=True), None
+        )
+        self.resolved_processor_revision = extract_commit_hash(
+            cached_file(processor_path, "preprocessor_config.json", local_files_only=True), None
+        )
 
     def score_differentiable(self, *, prompt: list[str], image: torch.Tensor) -> RewardModelOutput:
         """Score BCHW floating RGB pixels in [0, 1], preserving image gradients.

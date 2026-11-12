@@ -86,3 +86,10 @@ remain useful evidence for the unchanged model owner, with that narrower scope.
 Exact continuation uses the recorded runtime identity and a drained acquisition or finite-data
 epoch boundary. It does not promise recovery of arbitrary in-flight reward work or continuation
 under a changed TP/CP topology. The [configuration guide](configuration.md) explains the boundary.
+
+## ReFL input-gradient training
+
+ReFL adds a distinct optimization-stage feedback path. Initial decoder admission covers
+SD3.5 and FLUX.1 images. Selected evidence covers native SD3.5 DDP continuation and FLUX.1
+FSDP2 TP2/SP/CP2/DP2 with replicated reward/decoder components. Pretrained PickScore has
+an additional single-GPU end-to-end test. See [ReFL](../training/refl.md).

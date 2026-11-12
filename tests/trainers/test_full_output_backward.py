@@ -224,6 +224,41 @@ def _art_trainer():
     return trainer, samples, (weight,)
 
 
+def _refl_trainer():
+    """Exercise ReFL's real objective through the common full-output backward owner."""
+    from flow_factory.hparams import ReFLTrainingArguments
+    from flow_factory.rewards.differentiable import DifferentiableRewardOutput
+
+    template, samples, parameters = _art_trainer()
+    trainer = object.__new__(get_trainer_class("refl"))
+    trainer.__dict__.update(template.__dict__)
+    trainer.training_args = ReFLTrainingArguments(
+        unique_sample_num_per_epoch=1,
+        group_size=2,
+        num_inference_steps=1,
+        gradient_accumulation_steps=1,
+        shuffle_samples=False,
+    )
+    trainer.config = SimpleNamespace(data_args=SimpleNamespace(source_id_to_name=["tiny"]))
+    for index, sample in enumerate(samples):
+        sample.source_id = 0
+        sample.sampling_sample_id = index
+        sample.prompt = "a bird"
+    trainer.adapter.build_training_component_times = lambda *a, **kw: SimpleNamespace(
+        sigma={"latent": torch.tensor([0.5])}
+    )
+    trainer.adapter.project_velocity_to_clean_state = lambda state, times, velocity: LatentState(
+        {"latent": state.components["latent"] - 0.5 * velocity.components["latent"]}
+    )
+    trainer.adapter.decode_differentiable_state = lambda state, **kw: {
+        "image": state.components["latent"].sigmoid()
+    }
+    trainer.differentiable_feedback = lambda **kw: DifferentiableRewardOutput(
+        scores={"pixel": kw["image"].square().mean(1)}, weights={"pixel": torch.ones(1)}
+    )
+    return trainer, samples, parameters
+
+
 def _case(name, monkeypatch):
     """Build real objective entry points; new registry entries must supply a case."""
     metrics = defaultdict(list)
@@ -239,6 +274,8 @@ def _case(name, monkeypatch):
         return trainer, (adapter.policy_weight,), run, metrics, 1
     if name in {"grpo", "grpo-guard", "dppo", "nft", "awm", "dpo"}:
         trainer, samples, parameters = _online_trainer(name, monkeypatch)
+    elif name == "refl":
+        trainer, samples, parameters = _refl_trainer()
     elif name == "art":
         trainer, samples, parameters = _art_trainer()
     elif name in {"dgpo", "crd"}:

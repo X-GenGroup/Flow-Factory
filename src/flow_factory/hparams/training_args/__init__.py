@@ -38,6 +38,7 @@ from .grpo import GRPOTrainingArguments
 from .nft import NFTTrainingArguments
 from .offline_dpo import OfflineDPOTrainingArguments
 from .opd import DiffusionOPDTrainingArguments, TeacherConfig
+from .refl import ReFLTrainingArguments
 from .sft import SFTTrainingArguments
 from .tdm import TDMQuerySamplingPolicy, TDMTrainingArguments
 from .tdm_r1 import TDMR1TrainingArguments
@@ -51,6 +52,7 @@ __all__ = [
     "DPPOTrainingArguments",
     "NFTTrainingArguments",
     "ARTTrainingArguments",
+    "ReFLTrainingArguments",
     "AWMTrainingArguments",
     "DPOTrainingArguments",
     "DGPOTrainingArguments",

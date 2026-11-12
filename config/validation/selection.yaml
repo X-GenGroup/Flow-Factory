@@ -9,6 +9,11 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/trainers/rl/refl.py, src/flow_factory/hparams/training_args/refl.py,
+            examples/refl/**, tests/trainers/test_refl.py, tests/distributed/refl_reward.py,
+            tests/distributed/test_refl_training.py, tests/distributed/test_refl_real_reward.py]
+    requires: [algorithm.refl.contracts, algorithm.refl.ddp, algorithm.refl.tp_cp, algorithm.refl.real_reward]
+    reason: Reward-to-policy derivatives require an independent objective, native image continuation and prepared TP/SP/CP input-gradient composition.
   - paths: [src/flow_factory/contracts/__init__.py]
     symbols: ['<module>']
     requires: [execution.contracts, feedback.differentiable.contracts]
@@ -1384,6 +1389,14 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths: [src/flow_factory/models/abc.py]
+    symbols: [BaseAdapter.differentiable_decode_fields, BaseAdapter.decode_differentiable_state]
+    requires: [algorithm.refl.contracts, algorithm.refl.ddp, algorithm.refl.tp_cp, algorithm.refl.real_reward]
+    reason: The opt-in native Torch decoder boundary must retain pixel-to-policy derivatives and reject undeclared adapters before loading.
+  - paths: [src/flow_factory/models/stable_diffusion/sd3_5.py, src/flow_factory/models/flux/flux1.py]
+    symbols: [SD3_5Adapter.differentiable_decode_fields, Flux1Adapter.differentiable_decode_fields]
+    requires: [algorithm.refl.contracts, algorithm.refl.ddp, algorithm.refl.tp_cp, algorithm.refl.real_reward]
+    reason: Additive decoder declarations use the same native preprocessing, forward and parallel plans; selected ReFL executions qualify only this new input-gradient path.
   - paths: [src/flow_factory/trainers/abc.py]
     symbols: [BaseTrainer._init_reward_model]
     requires: [execution.contracts, feedback.differentiable.contracts]

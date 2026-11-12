@@ -1,6 +1,6 @@
 # Flow-Factory roadmap
 
-Latest reviewed baseline: main `29593921` (2026-11-11), including ART and shared replay selection in PR #377.
+Latest reviewed baseline: main `e3f8e06d` (2026-11-12), including ART/shared replay #377, reference MSE #379 and async media logging #380.
 P01–P14 are merged and [v0.5.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0).
 The historical v0.5.0 19-model / 14-trainer TP/SP/Ulysses-CP inventory, SP completion, shared parallelism owners,
 P12j sharded loading and P13a evidence continuity remain the implemented foundation. Historical
@@ -11,7 +11,8 @@ P15a user documentation merged in #376. [P18 DiffusionART](milestones/v0.5x-v0.6
 merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377), bringing the current registry
 to 15 trainers; its supported compositions and evidence are recorded in the
 [ART guide](../guidance/training/art.md), not inferred from the historical matrix. The next
-development entry is [P19a: reward derivative contract](milestones/v0.5x-v0.6.md#p19a).
+development work is the P19a/P19b stack for [differentiable rewards and ReFL](milestones/v0.5x-v0.6.md#p19).
+After review and merge, [P20a](milestones/v0.5x-v0.6.md#p20a) is the next implementation entry.
 ART experiment follow-through and v0.5.x publication remain separate from that dependency.
 [P19–P21](milestones/v0.5x-v0.6.md#p19) deliver ReFL,
 differentiable rewards, component execution policies and DRTune for v0.6. Backend expansion

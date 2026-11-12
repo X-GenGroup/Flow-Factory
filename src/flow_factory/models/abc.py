@@ -908,6 +908,33 @@ class BaseAdapter(ABC):
         self._validate_encoded_output_geometry(validated_media, codec_condition, encoded)
         return encoded
 
+    differentiable_decode_fields: ClassVar[tuple[str, ...]] = ()
+
+    def decode_differentiable_state(self, state: LatentState, *, batch) -> dict[str, torch.Tensor]:
+        """Decode an admitted single latent while retaining its input derivatives.
+
+        Concrete adapters opt in after verifying their native Torch decoder and
+        postprocessing. Geometry follows the collated rollout context. Structured
+        multi-component adapters can override this boundary when qualified.
+        """
+        if type(self).__dict__.get("differentiable_decode_fields") != ("image",):
+            raise ValueError(f"{type(self).__name__} has no qualified differentiable image decoder")
+        if state.component_names != ("latent",):
+            raise ValueError(
+                f"image decoder requires one latent component, received {state.component_names}"
+            )
+        kwargs = filter_kwargs(
+            self.decode_latents,
+            **{**batch, "latents": state.components["latent"], "output_type": "pt"},
+        )
+        # Native inference decodes in the VAE's own dtype. A policy autocast
+        # scope must not change this frozen component's forward or Jacobian.
+        with torch.autocast(device_type=state.components["latent"].device.type, enabled=False):
+            pixels = self.decode_latents(**kwargs)
+        if not isinstance(pixels, torch.Tensor) or pixels.ndim != 4 or not pixels.requires_grad:
+            raise ValueError("differentiable decoder must return live BCHW image tensors")
+        return {"image": pixels}
+
     def decode_output_state(
         self,
         encoded: EncodedOutputState,

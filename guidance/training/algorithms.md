@@ -32,6 +32,7 @@
    - [Reward monitoring](#reward-monitoring)
 - [TDM](#tdm)
 - [TDM-R1](#tdm-r1)
+- [ReFL](#refl)
 - [DiffusionART](#diffusionart)
 - [DiffusionNFT](#diffusionnft)
    - [Old Policy via EMA](#old-policy-via-ema)
@@ -57,7 +58,7 @@ Two execution dimensions are separate from the mathematical paradigm:
 | Dimension | Values | Meaning |
 |---|---|---|
 | Acquisition | `generation`, `dataset` | Generate a rollout collection or fetch every batch from a finite dataloader. |
-| Feedback | `runtime_reward`, `none` | Run reward/advantage processing or optimize without runtime feedback. |
+| Feedback | `runtime_reward`, `differentiable_reward`, `none` | Runtime reward/advantage, optimization-stage input gradients, or reward-free optimization. |
 
 GRPO and online DPO use `generation + runtime_reward`. Generation-based distillation uses
 `generation + none`. SFT and offline DPO use `dataset + none`: their sampling stage is the dataset
@@ -1069,3 +1070,10 @@ Each teacher's `applicable_datasets` must reference declared `data.datasets[*].n
 * <a name="ref15"></a>[15] [**Flow-DPPO**: Divergence Proximal Policy Optimization for Flow Matching Models](https://arxiv.org/abs/2606.11025) ([Code](https://github.com/Tencent-Hunyuan/UniRL/tree/main/FlowDPPO#readme))
 * <a name="ref16"></a>[16] [**DMD2**: Improved Distribution Matching Distillation for Fast Image Synthesis](https://arxiv.org/abs/2405.14867)
 * <a name="ref17"></a>[17] [**TDM**: Learning Few-Step Diffusion Models by Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674)
+
+## ReFL
+
+ReFL uses `generation + differentiable_reward`. A selected saved-state prediction is
+projected to clean data, decoded and scored with input gradients through frozen auxiliary
+networks. Its training rewards declare gradient capabilities. Read the
+[ReFL guide](refl.md) for objective, late-step selection, recipe and supported layouts.
