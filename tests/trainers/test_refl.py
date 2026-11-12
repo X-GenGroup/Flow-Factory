@@ -138,7 +138,11 @@ def test_production_optimize_matches_independent_reward_gradient_two_cycles():
     )
     trainer = object.__new__(ReFLTrainer)
     trainer.training_args = ReFLTrainingArguments(num_inner_epochs=1, seed=17)
-    trainer.config = SimpleNamespace(data_args=SimpleNamespace(source_id_to_name=["tiny"]))
+    trainer.config = SimpleNamespace(
+        data_args=SimpleNamespace(
+            source_id_to_name=["tiny"], training_datasets=[SimpleNamespace(name="tiny")]
+        )
+    )
     trainer.adapter = adapter
     trainer.accelerator = SimpleNamespace(sync_gradients=True)
     trainer.autocast = nullcontext
@@ -204,3 +208,18 @@ def test_shipped_pickscore_recipe_parses_through_public_arguments():
     assert args.scheduler_args.replay_steps == list(range(30, 40))
     assert args.training_args.get_num_train_timesteps(args) == 1
     assert args.model_args.model_type == "sd3-5"
+
+
+def test_single_training_source_with_independent_evaluation_source():
+    trainer = object.__new__(ReFLTrainer)
+    trainer.config = SimpleNamespace(
+        data_args=SimpleNamespace(
+            source_id_to_name=["evaluation", "alignment"],
+            training_datasets=[SimpleNamespace(name="alignment")],
+        )
+    )
+    assert trainer._reward_source_names([SimpleNamespace(source_id=None)]) == ["alignment"]
+    assert trainer._reward_source_names([SimpleNamespace(source_id=1)]) == ["alignment"]
+    trainer.config.data_args.training_datasets.append(SimpleNamespace(name="other"))
+    with pytest.raises(ValueError, match="lacks source identity"):
+        trainer._reward_source_names([SimpleNamespace(source_id=None)])

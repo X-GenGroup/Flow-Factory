@@ -153,11 +153,12 @@ class ReFLTrainer(BaseTrainer):
         names = []
         for sample in samples:
             if sample.source_id is None:
-                if len(sources) != 1:
+                training_sources = self.config.data_args.training_datasets
+                if len(training_sources) != 1:
                     raise ValueError(
-                        f"ReFL sample lacks source identity; configured sources={sources!r}"
+                        f"ReFL sample lacks source identity; training sources={[source.name for source in training_sources]!r}"
                     )
-                names.append(sources[0])
+                names.append(training_sources[0].name)
             else:
                 names.append(sources[int(sample.source_id)])
         return names
