@@ -9,6 +9,9 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [tests/trainers/test_training_media_logging.py]
+    requires: [logging.contracts]
+    reason: Shared media budget, scored-media detachment and runtime-feedback logging use the CPU logging oracle.
   - paths:
     - tests/models/test_composed_forward.py
     catalog_test_owner: true

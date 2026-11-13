@@ -112,7 +112,9 @@ def test_production_optimize_matches_independent_reward_gradient_two_cycles():
         timestep={"latent": torch.tensor([500.0])}, next_timestep={"latent": torch.tensor([250.0])}
     )
     state = LatentState({"latent": x})
-    sample = SimpleNamespace(source_id=None, sampling_sample_id=7)
+    from flow_factory.samples import T2ISample
+
+    sample = T2ISample(prompt="a bird", sampling_sample_id=7)
 
     class Batch(dict):
         samples = [sample]
@@ -144,6 +146,10 @@ def test_production_optimize_matches_independent_reward_gradient_two_cycles():
             source_id_to_name=["tiny"], training_datasets=[SimpleNamespace(name="tiny")]
         )
     )
+    trainer.log_args = SimpleNamespace(max_logged_train_samples=1)
+    trainer.logger = object()
+    media_logs = []
+    trainer.log_data = lambda data, step: media_logs.append(data)
     trainer.adapter = adapter
     trainer.model_bundle = torch.nn.ParameterList([weight])
     trainer.accelerator = SimpleNamespace(sync_gradients=True)
@@ -176,6 +182,8 @@ def test_production_optimize_matches_independent_reward_gradient_two_cycles():
         with torch.no_grad():
             oracle_weight.add_(gradient, alpha=-0.1)
         torch.testing.assert_close(weight, oracle_weight)
+    assert len(media_logs) == 2
+    assert all(not entry["train_samples"][0].image.requires_grad for entry in media_logs)
 
 
 def test_resume_identity_binds_reward_revision_and_preprocessing(monkeypatch):

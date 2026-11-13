@@ -1029,6 +1029,52 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             self.logger = None
         self.accelerator.wait_for_everyone()
 
+    def log_train_samples(
+        self,
+        samples: List[BaseSample],
+        *,
+        media: Optional[Mapping[str, torch.Tensor]] = None,
+        rewards: Optional[Mapping[str, torch.Tensor]] = None,
+    ) -> None:
+        """Log available decoded training media within one acquisition's budget.
+
+        Differentiable feedback supplies its scored media and rewards. Runtime
+        feedback supplies generated samples after reward finalization. This method
+        performs no decoding or collectives and detaches media before logging.
+        """
+        limit = getattr(getattr(self, "log_args", None), "max_logged_train_samples", 0)
+        if limit == 0 or getattr(self, "logger", None) is None:
+            return
+        cycle = self.cycle_index
+        if getattr(self, "_train_media_cycle", None) != cycle:
+            self._train_media_cycle = cycle
+            self._train_media_count = 0
+        remaining = limit - self._train_media_count
+        if remaining <= 0:
+            return
+        selected = []
+        for index, sample in enumerate(samples):
+            fields = (
+                {name: values[index].detach() for name, values in media.items()}
+                if media is not None
+                else {}
+            )
+            if all(
+                fields.get(name, getattr(sample, name, None)) is None for name in ("image", "video")
+            ):
+                continue
+            extra = dict(sample.extra_kwargs)
+            if rewards is not None:
+                extra["rewards"] = {
+                    name: float(values[index].detach()) for name, values in rewards.items()
+                }
+            selected.append(replace(sample, extra_kwargs=extra, **fields))
+            if len(selected) == remaining:
+                break
+        if selected:
+            self.log_data({"train_samples": selected}, step=self.step)
+            self._train_media_count += len(selected)
+
     def _init_reward_model(self) -> Tuple[Dict[str, BaseRewardModel], Dict[str, BaseRewardModel]]:
         """Initialize reward model from configuration."""
 
@@ -1129,7 +1175,6 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 verbose=self.log_args.verbose,
                 source_id_to_name=self.config.data_args.source_id_to_name,
                 group_coordinator=self.group_coordinator,
-                max_logged_samples=self.log_args.max_logged_train_samples,
             )
 
         # Per-eval-dataset reward processors and buffers: the loop below builds
@@ -1946,6 +1991,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 return
             feedback_started = time.monotonic()
             self.prepare_feedback(samples)
+            self.log_train_samples(samples)
             feedback_seconds = time.monotonic() - feedback_started
         optimization_started = time.monotonic()
         self.optimize(samples)
@@ -2193,6 +2239,7 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
                 }
             )
             self.log_data(metrics, step=self.step)
+            self.log_train_samples(samples)
         except BaseException:
             self._abort_reward_overlap_safely(overlap_context)
             raise

@@ -167,6 +167,7 @@ class ReFLTrainer(BaseTrainer):
                     loss = self.training_args.refl_reward_scale * torch.stack(terms).sum()
                     loss_info["loss"].append(loss.detach())
                     self._backward_full_output_loss(loss)
+                    self.log_train_samples(batch.samples, media=media, rewards=feedback.scores)
                     if self.accelerator.sync_gradients:
                         loss_info = self._apply_optimizer_step(loss_info)
 

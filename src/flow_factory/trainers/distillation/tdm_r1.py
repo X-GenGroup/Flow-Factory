@@ -296,6 +296,7 @@ class TDMR1Trainer(TDMTrainer):
         advantage_metrics = self.advantage_processor.pop_advantage_metrics()
         if advantage_metrics:
             self.log_data(advantage_metrics, step=self.step)
+        self.log_train_samples(samples)
 
     def optimize(self, samples: Sequence[Any]) -> None:
         """Run fake TTUR, one surrogate step, then one generator step."""

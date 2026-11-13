@@ -19,6 +19,7 @@ import traceback
 from dataclasses import fields, replace
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -182,6 +183,26 @@ def train_model(
             fixture_module=fixture_module,
         )
     )
+    from flow_factory.logger.formatting import LogFormatter
+
+    logged_media = []
+    trainer.log_args.max_logged_train_samples = 1
+    if trainer.accelerator.is_main_process:
+
+        def record(data, step):
+            if "train_samples" in data:
+                rows = data["train_samples"]
+                assert len(rows) == 1
+                for sample in rows:
+                    for name in trainer.adapter.differentiable_decode_fields:
+                        value = getattr(sample, name)
+                        assert value is not None and not value.requires_grad
+                    assert sample.extra_kwargs["rewards"]
+                formatted = LogFormatter.format_dict(data)
+                assert formatted["train_samples"]
+                logged_media.append(step)
+
+        trainer.logger = SimpleNamespace(log_data=record, close=lambda **kwargs: None)
     gradients = []
     decoded_gradients = {}
     latent_gradients = {}
@@ -264,6 +285,7 @@ def train_model(
     try:
         trainer.start()
         assert len(gradients) == 2, gradients
+        assert len(logged_media) == (2 if trainer.accelerator.is_main_process else 0)
         assert any(
             not torch.equal(before, local(after)) for before, after in zip(initial, parameters)
         )
@@ -288,6 +310,7 @@ def train_model(
             "policy_gradient_norms": gradients,
             "media_gradient_norms": decoded_gradients,
             "latent_gradient_norms": latent_gradients,
+            "training_media_steps": logged_media,
         }
         if real_reward:
             result["reward_revision"] = trainer.reward_models["media"].resolved_model_revision

@@ -16237,6 +16237,8 @@ cases:
   - -W
   - error::pytest.PytestUnraisableExceptionWarning
   - tests/logger
+  - tests/trainers/test_training_media_logging.py
+  - tests/trainers/test_tile_stream_lifecycle.py
   fixture: Recording backend with a gated converter, stub W&B/SwanLab/TensorBoard modules and synthetic moving clips encoded by the real GIF/MP4 writers.
   fixture_kind: synthetic
   qa: Q0
@@ -16257,6 +16259,8 @@ cases:
       frame-rate-first fitting that keeps duration, and skipped videos that cannot meet their floors.
   artifacts:
   - tests/logger/test_async_logging.py
+  - tests/trainers/test_training_media_logging.py
+  - tests/trainers/test_tile_stream_lifecycle.py
   - tests/logger/test_tensorboard_resize.py
   cost_seconds: 20
   resources:
@@ -16264,6 +16268,10 @@ cases:
     packages:
     - pytest
     - torch
+    - accelerate
+    - diffusers
+    - transformers
+    - peft
     - numpy
     - Pillow
     - imageio

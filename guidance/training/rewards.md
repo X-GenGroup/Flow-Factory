@@ -683,3 +683,13 @@ Custom scorers override `score_differentiable`, declare supported fields and ret
 finite Tensor score per input. Freeze network weights while allowing autograd through
 its inputs. Test finite differences, tail batches, input gradients, detached negative
 controls and ordinary-score parity. Keep media transformations in Torch throughout.
+
+### Training sample media
+
+`log.max_logged_train_samples` limits `train_samples` per acquisition on the logging
+rank. Set it to `0` to disable training media. Runtime-reward algorithms log existing
+decoded outputs after feedback, including custom advantage functions and overlap.
+Differentiable-reward algorithms log the decoded prediction that was actually scored,
+with detached reward captions. The limit spans optimization microbatches and inner
+epochs. Logging reuses decoded media and adds no decode or distributed collective.
+Latent-only samples are skipped. Existing asynchronous media queue limits still apply.
