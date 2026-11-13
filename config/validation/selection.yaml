@@ -10,6 +10,13 @@ static_paths:
   - assets/**
 owners:
   - paths:
+    - tests/models/test_composed_forward.py
+    catalog_test_owner: true
+    requires:
+    - parallel.composed_forward.contracts
+    reason: Prepared-root composition, dynamic unused heads, gradients and failure cleanup have one authoritative
+      CPU/Gloo oracle.
+  - paths:
     - tests/models/test_classic_image_output_codecs.py
     - tests/models/minimax_h3/test_workflow_execution.py
     catalog_test_owner: true
@@ -44,11 +51,14 @@ owners:
     - algorithm.refl.model.minimax_h3_fl2va
     - algorithm.refl.model.minimax_h3_ref2va
     - algorithm.refl.joint_tp_cp
+    - algorithm.refl.video_ddp.ltx2
+    - algorithm.refl.video_ddp.h3
+    - algorithm.refl.wan_dual_fsdp
     reason: The registry-matched native closure and joint prepared composition are executable witnesses.
   - paths: [src/flow_factory/trainers/rl/refl.py, src/flow_factory/hparams/training_args/refl.py,
             examples/refl/**, tests/trainers/test_refl.py, tests/distributed/refl_reward.py,
             tests/distributed/test_refl_training.py, tests/distributed/test_refl_real_reward.py]
-    requires: [algorithm.refl.contracts, algorithm.refl.ddp, algorithm.refl.tp_cp, algorithm.refl.real_reward, algorithm.refl.joint_tp_cp]
+    requires: [algorithm.refl.contracts, algorithm.refl.ddp, algorithm.refl.tp_cp, algorithm.refl.real_reward, algorithm.refl.joint_tp_cp, algorithm.refl.video_ddp.ltx2, algorithm.refl.video_ddp.h3, algorithm.refl.wan_dual_fsdp]
     reason: Reward-to-policy derivatives require an independent objective, native image continuation and prepared TP/SP/CP input-gradient composition.
   - paths: [src/flow_factory/contracts/__init__.py]
     symbols: ['<module>']
@@ -1425,6 +1435,36 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths:
+    - src/flow_factory/models/model_bundle.py
+    symbols:
+    - <module>
+    - <definition_order>
+    - _composed_bundle
+    - composed_forward
+    - ModelBundle.forward
+    - RoutedComponentProxy.__call__
+    requires:
+    - parallel.composed_forward.contracts
+    - algorithm.refl.ddp
+    - algorithm.refl.tp_cp
+    - algorithm.refl.joint_tp_cp
+    - algorithm.refl.video_ddp.ltx2
+    - algorithm.refl.video_ddp.h3
+    reason: An explicit composed-call route groups one prediction under a prepared root, with context-local
+      proxy bypass; named routes, roles, cleanup and FSDP2 remain qualified by existing and new witnesses.
+  - paths:
+    - src/flow_factory/trainers/loader.py
+    symbols:
+    - <module>
+    - _requires_ddp_unused_parameter_detection
+    requires:
+    - parallel.composed_forward.contracts
+    - execution.contracts
+    - algorithm.refl.video_ddp.ltx2
+    - algorithm.refl.video_ddp.h3
+    reason: Differentiable feedback may leave decoded modalities unscored; preserve existing role/model
+      detection and qualify actual DDP subset objectives.
   - paths:
     - src/flow_factory/models/stable_diffusion/sd3_5.py
     symbols:

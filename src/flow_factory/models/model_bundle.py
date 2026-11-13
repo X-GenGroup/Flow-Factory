@@ -28,16 +28,38 @@ root — which is what drives DDP's gradient reducer / FSDP's param all-gather /
 the DeepSpeed engine — while attribute access (``.config``, ``.dtype``,
 ``.parameters()``, ``cache_context``, ``disable_adapter`` ...) delegates to the
 inner module so existing adapter code is unchanged.
+
+``composed_forward`` groups a prediction's component calls under one prepared-root
+invocation. The callable uses registered components, whose proxies stay inside
+that root while guidance branches are evaluated.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping
+from contextvars import ContextVar
+from typing import Any, Callable, Dict, Mapping
 
 import torch
 import torch.nn as nn
 
 from .variants import ComponentVariantRegistry
+
+_composed_bundle: ContextVar[nn.Module | None] = ContextVar("composed_bundle", default=None)
+
+
+def composed_forward(
+    bundle: nn.Module, forward: Callable[..., Any], /, *args: Any, **kwargs: Any
+) -> Any:
+    """Enter a prepared root once for a prediction with several component calls.
+
+    Component proxies belonging to this root call their registered members inside
+    its forward. Context restoration also covers exceptions and nested roots.
+    """
+    token = _composed_bundle.set(bundle)
+    try:
+        return bundle(forward, *args, **kwargs)
+    finally:
+        _composed_bundle.reset(token)
 
 
 class ModelBundle(nn.Module):
@@ -97,14 +119,14 @@ class ModelBundle(nn.Module):
         deduped = list(dict.fromkeys(names))
         return deduped or None
 
-    def forward(self, component_name: str, /, *args, **kwargs):
-        """Dispatch the call to ``members[component_name]``.
+    def forward(self, component_name: str | Callable, /, *args, **kwargs):
+        """Run a named component or one composed prediction.
 
         ``component_name`` is positional-only so it never collides with a
         member's own keyword arguments.
 
         Args:
-            component_name: Name of the member to invoke.
+            component_name: Member name or a composed prediction callable.
             *args: Positional args forwarded to the member.
             **kwargs: Keyword args forwarded to the member.
 
@@ -114,6 +136,8 @@ class ModelBundle(nn.Module):
         Raises:
             KeyError: If ``component_name`` is not a member of this bundle.
         """
+        if callable(component_name):
+            return component_name(*args, **kwargs)
         if component_name not in self.members:
             raise KeyError(
                 f"ModelBundle has no member '{component_name}'. "
@@ -202,6 +226,8 @@ class RoutedComponentProxy:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         bundle = object.__getattribute__(self, "_bundle")
+        if _composed_bundle.get() is bundle:
+            return self.inner(*args, **kwargs)
         return bundle(self._active_route(), *args, **kwargs)
 
     def __getattr__(self, attr: str) -> Any:

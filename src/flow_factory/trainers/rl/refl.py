@@ -18,8 +18,10 @@ from collections import defaultdict
 
 import torch
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel
 
 from ...contracts.execution import DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT
+from ...models.model_bundle import composed_forward
 from ...models.trajectory_bridge import resolve_replay_projection_times
 from ...models.trajectory_bridge.masks import _expand_active_mask
 from ...samples import BaseSample, LatentState
@@ -29,7 +31,7 @@ from ...utils.trajectory_collector import compute_trajectory_indices
 from ..abc import BaseTrainer
 from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.forward_kwargs import replay_forward_kwargs
-from ..common.group_noise import identity_timestep_generator, sample_noise_ids
+from ..common.group_noise import identity_timestep_generator
 
 
 class ReFLTrainer(BaseTrainer):
@@ -91,6 +93,7 @@ class ReFLTrainer(BaseTrainer):
             }
         identity["differentiable_scorers"] = scorers
         identity["differentiable_decode_fields"] = self.adapter.differentiable_decode_fields
+        identity["replay_step_scope"] = "world"
         return identity
 
     def sample(self) -> list[BaseSample]:
@@ -111,17 +114,14 @@ class ReFLTrainer(BaseTrainer):
         candidates = self.adapter.get_train_step_indices()
         for inner_epoch in range(self.training_args.num_inner_epochs):
             ordered = self._order_samples_for_optimize(samples, inner_epoch)
-            for batch in self._iter_prefetched_batches(
-                ordered, self.training_args.per_device_batch_size
+            for batch_index, batch in enumerate(
+                self._iter_prefetched_batches(ordered, self.training_args.per_device_batch_size)
             ):
-                generator = identity_timestep_generator(
-                    self, sample_noise_ids(batch.samples), inner_epoch
-                )
-                step = int(candidates[torch.randint(len(candidates), (), generator=generator)])
+                step = self._select_replay_step(candidates, inner_epoch, batch_index)
                 replay = self.adapter.get_replay_step(batch, step)
                 with self.accumulate_gradients():
                     with self.autocast():
-                        output = self.adapter.forward_state(
+                        velocity = self._predict_velocity(
                             batch=batch,
                             state=replay.state,
                             times=replay.times,
@@ -134,7 +134,7 @@ class ReFLTrainer(BaseTrainer):
                             self.adapter, replay.times, batch=batch
                         )
                         clean = self.adapter.project_velocity_to_clean_state(
-                            replay.state, projection_times, output.velocity
+                            replay.state, projection_times, velocity
                         )
                         if clean.active_masks is not None:
                             clean = LatentState(
@@ -169,6 +169,22 @@ class ReFLTrainer(BaseTrainer):
                     self._backward_full_output_loss(loss)
                     if self.accelerator.sync_gradients:
                         loss_info = self._apply_optimizer_step(loss_info)
+
+    def _select_replay_step(self, candidates, inner_epoch: int, batch_index: int) -> int:
+        """Share a coordinate across the global microbatch and conditional FSDP routes."""
+        generator = identity_timestep_generator(self, (batch_index,), inner_epoch)
+        return int(candidates[torch.randint(len(candidates), (), generator=generator)])
+
+    def _predict_velocity(self, **kwargs) -> LatentState:
+        """Keep multi-guidance predictions inside one DDP reducer iteration."""
+        if not isinstance(self.model_bundle, DistributedDataParallel):
+            return self.adapter.forward_state(**kwargs).velocity
+
+        def predict():
+            return tuple(self.adapter.forward_state(**kwargs).velocity.components.values())
+
+        values = composed_forward(self.model_bundle, predict)
+        return LatentState(dict(zip(self.adapter.trajectory_component_order, values, strict=True)))
 
     def _reward_source_names(self, samples) -> list[str]:
         """Resolve source-less single-source batches without guessing mixed routing."""

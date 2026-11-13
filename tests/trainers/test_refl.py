@@ -145,6 +145,7 @@ def test_production_optimize_matches_independent_reward_gradient_two_cycles():
         )
     )
     trainer.adapter = adapter
+    trainer.model_bundle = torch.nn.ParameterList([weight])
     trainer.accelerator = SimpleNamespace(sync_gradients=True)
     trainer.autocast = nullcontext
     trainer.accumulate_gradients = nullcontext

@@ -70,3 +70,12 @@ class MediaReward(PointwiseRewardModel):
     @torch.no_grad()
     def __call__(self, *, prompt, **media):
         return self.score_differentiable(prompt=prompt, **media)
+
+
+class VideoOnlyReward(MediaReward):
+    """Leave the audio decoder/output head outside the differentiated objective."""
+
+    gradient_capability = RewardGradientCapability(input_fields=("video",))
+
+    def score_differentiable(self, *, prompt, video):
+        return super().score_differentiable(prompt=prompt, video=video)

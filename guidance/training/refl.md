@@ -88,10 +88,17 @@ Use `rewards` for differentiable training objectives and `eval_rewards` for OCR,
 or other observation-only scores. Unsupported model/reward pairs fail before loading
 weights. See [reward capabilities](rewards.md#input-gradient-capabilities) for custom scorers.
 
+DDP groups the guidance branches of one prediction under one prepared forward.
+Multimodal differentiated feedback enables unused-parameter detection, allowing
+unscored output heads to keep `grad=None` and skip optimizer updates. LTX2 and H3
+have two-card video-only reward tests covering this path. A two-card Wan I2V test checks
+shared timestep selection and updates through both sharded denoisers.
+
 ## Configuration and continuation
 
 - `scheduler.replay_steps` selects retained rollout transitions. ReFL draws one candidate
-  per optimization microbatch, using sample identity so TP/CP peers and resumed runs agree.
+  per global optimization microbatch. Epoch, inner epoch and microbatch position seed
+  the draw, so all shards choose the same conditional denoiser and drained resumes agree.
 - ODE generation supports the Euler flow solver and MiniMax H3's native flow solver.
 - `num_inner_epochs`, update count and gradient accumulation remain configurable. The
   accumulation count uses one backward term per microbatch, independently of candidate count.

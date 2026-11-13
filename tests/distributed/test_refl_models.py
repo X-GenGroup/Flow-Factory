@@ -47,8 +47,8 @@ MODELS = {
 }
 
 
-def build_model_fixture(root, model):
-    module = importlib.import_module(MODELS[model][0])
+def build_model_fixture(root, model, fixture_module=None):
+    module = importlib.import_module(fixture_module or MODELS[model][0])
     if model == "minimax-h3-t2va":
         module.build_fixture(root, 2, "t2va")
     elif model == "qwen-image":
@@ -72,13 +72,24 @@ def build_model_fixture(root, model):
         (dataset / "train.jsonl").write_text("\n".join(rows) + "\n")
 
 
-def model_config(root, output, model, *, tp=1, cp=1, dp=1, real_reward=False):
+def model_config(
+    root,
+    output,
+    model,
+    *,
+    tp=1,
+    cp=1,
+    dp=1,
+    real_reward=False,
+    video_only=False,
+    fixture_module=None,
+):
     from flow_factory.hparams import ReFLTrainingArguments
     from flow_factory.hparams.parallelism_args import ParallelismArguments
     from flow_factory.hparams.reward_args import MultiRewardArguments
     from flow_factory.hparams.scheduler_args import SchedulerArguments
 
-    module = importlib.import_module(MODELS[model][0])
+    module = importlib.import_module(fixture_module or MODELS[model][0])
     options = {
         "algorithm": "grpo-guard",
         "training_mode": "full",
@@ -120,17 +131,28 @@ def model_config(root, output, model, *, tp=1, cp=1, dp=1, real_reward=False):
         num_processes=tp * cp * dp,
         training_args=ReFLTrainingArguments(**train),
         parallelism_args=ParallelismArguments(
-            dp_shard_size=dp,
+            dp_shard_size=1 if video_only else dp,
+            dp_replicate_size=dp if video_only else 1,
             tp_size=tp,
             cp_size=cp,
             sequence_parallel=tp > 1,
         ),
-        scheduler_args=SchedulerArguments(dynamics_type="ODE", replay_steps=[1, 2], seed=17),
+        scheduler_args=SchedulerArguments(
+            dynamics_type="ODE", replay_steps=[0, 2] if fixture_module else [1, 2], seed=17
+        ),
         reward_args=MultiRewardArguments.from_dict(
             [
                 {
                     "name": "media",
-                    "reward_model": "pickscore" if real_reward else "refl_reward.MediaReward",
+                    "reward_model": (
+                        "pickscore"
+                        if real_reward
+                        else (
+                            "refl_reward.VideoOnlyReward"
+                            if video_only
+                            else "refl_reward.MediaReward"
+                        )
+                    ),
                     "device": "cuda",
                 }
             ]
@@ -139,26 +161,49 @@ def model_config(root, output, model, *, tp=1, cp=1, dp=1, real_reward=False):
     )
 
 
-def train_model(root, model, *, tp=1, cp=1, dp=1, real_reward=False):
+def train_model(
+    root, model, *, tp=1, cp=1, dp=1, real_reward=False, video_only=False, fixture_module=None
+):
     from flow_factory.trainers.loader import load_trainer
 
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
     fixture = root / "fixture"
     trainer = load_trainer(
-        model_config(fixture, root / "run", model, tp=tp, cp=cp, dp=dp, real_reward=real_reward)
+        model_config(
+            fixture,
+            root / "run",
+            model,
+            tp=tp,
+            cp=cp,
+            dp=dp,
+            real_reward=real_reward,
+            video_only=video_only,
+            fixture_module=fixture_module,
+        )
     )
     gradients = []
     decoded_gradients = {}
     latent_gradients = {}
+    selected_steps = []
+    component_gradients = []
     original_decode = trainer.adapter.decode_differentiable_state
     original_step = trainer._apply_optimizer_step
+    original_replay = trainer.adapter.get_replay_step
     parameters = trainer.adapter.get_trainable_parameters()
 
     def local(tensor):
         return tensor.to_local() if hasattr(tensor, "to_local") else tensor
 
     initial = [local(p).detach().clone() for p in parameters]
+
+    def observed_replay(batch, step):
+        selected = torch.tensor([step], device=trainer.accelerator.device)
+        peers = [torch.empty_like(selected) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(peers, selected)
+        assert all(torch.equal(peer, selected) for peer in peers)
+        selected_steps.append(step)
+        return original_replay(batch, step)
 
     def observed_decode(state, **kwargs):
         for name, value in state.components.items():
@@ -193,23 +238,44 @@ def train_model(root, model, *, tp=1, cp=1, dp=1, real_reward=False):
         return media
 
     def observed_step(info):
+        if video_only:
+            assert any(parameter.grad is None for parameter in parameters)
         values = [local(p.grad).float().norm() for p in parameters if p.grad is not None]
         norm = torch.stack(values).norm()
         assert torch.isfinite(norm) and norm > 0
         gradients.append(norm.item())
+        if fixture_module is not None:
+            component_gradients.append(
+                {
+                    name: sum(
+                        local(p.grad).float().norm().item()
+                        for p in trainer.adapter.get_component(name).parameters()
+                        if p.grad is not None
+                    )
+                    for name in trainer.adapter.trainable_component_names
+                }
+            )
         return original_step(info)
 
     trainer.adapter.decode_differentiable_state = observed_decode
     trainer._apply_optimizer_step = observed_step
+    if fixture_module is not None:
+        trainer.adapter.get_replay_step = observed_replay
     try:
         trainer.start()
         assert len(gradients) == 2, gradients
         assert any(
             not torch.equal(before, local(after)) for before, after in zip(initial, parameters)
         )
-        assert set(decoded_gradients) == set(trainer.adapter.differentiable_decode_fields)
+        expected_media = (
+            {"video"} if video_only else set(trainer.adapter.differentiable_decode_fields)
+        )
+        assert set(decoded_gradients) == expected_media
         assert all(len(norms) == 2 and min(norms) > 0 for norms in decoded_gradients.values())
-        assert set(latent_gradients) == set(trainer.adapter.trajectory_component_order)
+        expected_components = (
+            {"video"} if video_only else set(trainer.adapter.trajectory_component_order)
+        )
+        assert set(latent_gradients) == expected_components
         assert all(len(norms) == 2 and min(norms) > 0 for norms in latent_gradients.values())
         for name in trainer.adapter.differentiable_decode_modules:
             decoder = trainer.adapter._require_component(name)
@@ -225,6 +291,17 @@ def train_model(root, model, *, tp=1, cp=1, dp=1, real_reward=False):
         }
         if real_reward:
             result["reward_revision"] = trainer.reward_models["media"].resolved_model_revision
+        if fixture_module is not None:
+            assert len(set(selected_steps)) == 2
+            assert set().union(
+                *(
+                    set(name for name, norm in row.items() if norm > 0)
+                    for row in component_gradients
+                )
+            ) == {"transformer", "transformer_2"}
+            result.update(
+                selected_steps=selected_steps, component_gradient_norms=component_gradients
+            )
         if torch.distributed.is_initialized():
             from test_model_preparation import runtime_observation
 
@@ -306,6 +383,94 @@ def test_cuda_refl_joint_tp_sp_cp(tmp_path):
     )
     assert all("error" not in result for result in results), results
     assert all(set(result["media_gradient_norms"]) == {"video", "audio"} for result in results)
+
+
+def two_rank_worker(rank, store_path, result_dir, options):
+    import torch.distributed as dist
+
+    os.environ.update(
+        RANK=str(rank),
+        LOCAL_RANK=str(rank),
+        WORLD_SIZE="2",
+        LOCAL_WORLD_SIZE="2",
+        MASTER_ADDR="127.0.0.1",
+        MASTER_PORT="29877",
+        ACCELERATE_USE_FSDP="false",
+    )
+    if options.get("dual_denoiser"):
+        os.environ.update(
+            ACCELERATE_USE_FSDP="true",
+            FSDP_VERSION="2",
+            FSDP_AUTO_WRAP_POLICY="TRANSFORMER_BASED_WRAP",
+            FSDP_TRANSFORMER_CLS_TO_WRAP="WanTransformerBlock",
+            FSDP_CPU_RAM_EFFICIENT_LOADING="false",
+            FSDP_RESHARD_AFTER_FORWARD="true",
+            FSDP_ACTIVATION_CHECKPOINTING="true",
+        )
+    torch.cuda.set_device(rank)
+    result = {"rank": rank}
+    try:
+        dist.init_process_group(
+            "nccl",
+            store=dist.FileStore(store_path, 2),
+            rank=rank,
+            world_size=2,
+            timeout=timedelta(seconds=180),
+        )
+        result.update(
+            train_model(
+                Path(options["root"]),
+                options["model"],
+                dp=2,
+                video_only=not options.get("dual_denoiser", False),
+                fixture_module=options.get("fixture_module"),
+            )
+        )
+    except Exception:
+        result["error"] = traceback.format_exc()
+    finally:
+        Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(result))
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+@pytest.mark.parametrize("model", ["ltx2_i2av", "minimax-h3-ref2va"])
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
+def test_cuda_refl_video_only_ddp(tmp_path, model):
+    from conftest import run_gloo_ranks
+
+    build_model_fixture(tmp_path / "fixture", model)
+    results = run_gloo_ranks(
+        two_rank_worker,
+        tmp_path / "ranks",
+        2,
+        {"root": str(tmp_path), "model": model},
+        timeout=300,
+    )
+    assert all("error" not in result for result in results), results
+    assert all(set(result["media_gradient_norms"]) == {"video"} for result in results)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA devices")
+def test_cuda_refl_wan_dual_fsdp_routes(tmp_path):
+    from conftest import run_gloo_ranks
+
+    module = "wan_i2v_dual_coupled_fixture"
+    build_model_fixture(tmp_path / "fixture", "wan2_i2v", fixture_module=module)
+    results = run_gloo_ranks(
+        two_rank_worker,
+        tmp_path / "ranks",
+        2,
+        {
+            "root": str(tmp_path),
+            "model": "wan2_i2v",
+            "dual_denoiser": True,
+            "fixture_module": module,
+        },
+        timeout=300,
+    )
+    assert all("error" not in result for result in results), results
+    assert all(len(set(result["selected_steps"])) == 2 for result in results)
 
 
 if __name__ == "__main__":

@@ -17814,3 +17814,237 @@ cases:
   - tests/models/minimax_h3/test_workflow_execution.py
   fixture: Existing image offline codec and H3 workflow regressions with current replay and image-schema
     fixtures.
+
+- id: refl-ltx2-video-ddp
+  covers:
+  - algorithm.refl.video_ddp.ltx2
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/ltx2/ltx2_i2av.py
+  fixture: Native audiovisual policy with video-only differentiated reward, actual conditioning and checkpointed
+    guidance.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Two DDP update cycles with unscored audio heads left ungraded, live video gradients and
+      native decode parity.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_video_only_ddp[ltx2_i2av]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/ltx23_i2av_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 35
+  resources:
+    gpus: 2
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-h3-video-ddp
+  covers:
+  - algorithm.refl.video_ddp.h3
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/minimax_h3/adapters.py
+  fixture: Native audiovisual policy with video-only differentiated reward, actual conditioning and checkpointed
+    guidance.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Two DDP update cycles with unscored audio heads left ungraded, live video gradients and
+      native decode parity.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_video_only_ddp[minimax-h3-ref2va]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_ref2va_coupled_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 35
+  resources:
+    gpus: 2
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- facets:
+  - objective
+  - feedback
+  owners:
+  - src/flow_factory/models/model_bundle.py
+  - src/flow_factory/trainers/loader.py
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 2
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise gradients and SGD updates against a dense reference with dynamically unused
+      heads; negative control reproduces premature reducer marking; nested contexts and exceptions preserve
+      routes.
+  artifacts:
+  - tests/models/test_composed_forward.py
+  - tests/trainers/test_multirole_loader.py
+  - tests/models/test_component_variants.py
+  - tests/models/runtime/test_component_runtime.py
+  - tests/models/test_variant_checkpointing.py
+  cost_seconds: 15
+  resources:
+    gpus: 0
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  id: composed-forward-contracts
+  covers:
+  - parallel.composed_forward.contracts
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_composed_forward.py
+  - tests/trainers/test_multirole_loader.py
+  - tests/models/test_component_variants.py
+  - tests/models/runtime/test_component_runtime.py
+  - tests/models/test_variant_checkpointing.py
+  fixture: Checkpointed two-head CPU policy and real DDP/Gloo, plus existing role/routing/checkpoint contracts.
+
+- id: refl-wan-dual-fsdp
+  covers:
+  - algorithm.refl.wan_dual_fsdp
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/wan/wan2_i2v.py
+  fixture: Native two-denoiser Wan I2V policy with ordered image conditions, two FSDP2 shards and checkpointing.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Rank-agreed replay coordinates, nonzero updates through both conditional denoisers, decoder
+      parity and live video derivatives over two cycles.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_wan_dual_fsdp_routes
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_refl_models.py
+  - tests/distributed/wan_i2v_dual_coupled_fixture.py
+  - tests/distributed/wan_i2v_expanded_coupled_fixture.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_remaining_coupled_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 30
+  resources:
+    gpus: 2
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []

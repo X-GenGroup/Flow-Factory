@@ -137,6 +137,7 @@ def test_structured_refl_uses_stored_component_sigmas_direction_and_fixed_tokens
         return {name: value for name, value in clean.components.items()}
 
     trainer = object.__new__(ReFLTrainer)
+    trainer.model_bundle = torch.nn.ParameterList([weights])
     trainer.training_args = ReFLTrainingArguments(seed=17)
     trainer.config = SimpleNamespace(
         data_args=SimpleNamespace(
@@ -176,3 +177,31 @@ def test_structured_refl_uses_stored_component_sigmas_direction_and_fixed_tokens
         torch.testing.assert_close(clean_values[0].components[name], expected[name])
     oracle = -sum(value.square().mean() for value in expected.values())
     torch.testing.assert_close(weights.grad, torch.autograd.grad(oracle, weights)[0])
+
+
+@pytest.mark.parametrize(
+    "model,expected", [("sd3-5", False), ("ltx2_i2av", True), ("minimax-h3-ref2va", True)]
+)
+def test_refl_ddp_preparation_accounts_for_unscored_output_modalities(model, expected):
+    from flow_factory.trainers.loader import _requires_ddp_unused_parameter_detection
+
+    config = SimpleNamespace(training_args=ReFLTrainingArguments())
+    assert (
+        _requires_ddp_unused_parameter_detection(config, get_model_adapter_class(model)) is expected
+    )
+
+
+def test_refl_coordinates_follow_global_microbatch_for_conditional_sharded_routes():
+    trainer = object.__new__(ReFLTrainer)
+    trainer.training_args = ReFLTrainingArguments(seed=17)
+    trainer.epoch = 0
+    candidates = torch.tensor([1, 2])
+    first = [trainer._select_replay_step(candidates, 0, batch) for batch in range(16)]
+    torch.manual_seed(890)
+    restored = object.__new__(ReFLTrainer)
+    restored.training_args = ReFLTrainingArguments(seed=17)
+    restored.epoch = 0
+    assert first == [restored._select_replay_step(candidates, 0, batch) for batch in range(16)]
+    assert set(first) == {1, 2}
+    restored.epoch = 1
+    assert restored._select_replay_step(candidates, 0, 0) != first[0]

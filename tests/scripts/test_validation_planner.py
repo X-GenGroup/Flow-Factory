@@ -4606,3 +4606,27 @@ def test_refl_model_decode_routes_keep_each_model_and_prepared_joint_witness():
     scope.update(paths=list(semantic), semantic_symbols=semantic)
     requirements = planner.infer_requirements(scope, policy, semantic)
     assert "model.flux2.cp_reference" in requirements["obligations"]
+
+
+def test_refl_prepared_forward_routes_keep_unused_heads_and_conditional_shards():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    semantic = {
+        "src/flow_factory/models/model_bundle.py": ["composed_forward"],
+        "src/flow_factory/trainers/loader.py": ["_requires_ddp_unused_parameter_detection"],
+        "src/flow_factory/trainers/rl/refl.py": ["ReFLTrainer._select_replay_step"],
+    }
+    scope = {
+        "paths": list(semantic),
+        "semantic_symbols": semantic,
+        "scope_complete": True,
+        "facets": [],
+        "uninspected": [],
+    }
+    obligations = planner.infer_requirements(scope, policy, semantic)["obligations"]
+    assert {
+        "parallel.composed_forward.contracts",
+        "algorithm.refl.video_ddp.ltx2",
+        "algorithm.refl.video_ddp.h3",
+        "algorithm.refl.wan_dual_fsdp",
+    } <= set(obligations)
+    assert not any(key.startswith("review.") for key in obligations)
