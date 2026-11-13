@@ -650,18 +650,27 @@ which media inputs retain derivatives through the complete scoring path. Existin
 `use_tensor_inputs` describes representation only. Pointwise/groupwise declarations
 continue to describe sample dependence.
 
-PickScore supports image input gradients through `score_differentiable(prompt=..., image=...)`.
-Its input is floating BCHW RGB in [0, 1]. Resize, center crop and normalization run in
-Torch using the processor's geometry and normalization. Scores retain the existing
-logit scale and /26 normalization. Tensor bicubic interpolation and ordinary PIL scoring
-have a small preprocessing difference due to PIL quantization.
+PickScore supports image and video input gradients through `score_differentiable`.
+Images use floating BCHW RGB/RGBA in [0, 1], and videos use BFCHW. RGBA inputs
+follow CLIP's RGB conversion. Video scoring averages every frame's normalized
+PickScore, preserving derivatives to each frame. Resize, crop and normalization run
+in Torch using processor-declared geometry. Scores retain the ordinary logit scale
+and /26 normalization. PIL quantization has a separate preprocessing parity tolerance.
 
-Algorithms declare `FeedbackMode.DIFFERENTIABLE_REWARD` and their required
-`reward_gradient_fields`. Configuration checks these against reward class declarations
-before model construction. Optimization-stage scoring runs synchronously, freezes scorer
-parameters in eval mode and retains derivatives to input media. The algorithm owns the
-loss transform and reduction. Its training `rewards` must all support the requested
-fields. Put OCR, remote API and other observation-only scores in `eval_rewards`.
+A capability's `input_fields` names inputs consumed together. Optional
+`alternative_input_fields` lists other complete input sets in preference order.
+For example, PickScore declares `("image",)` and the alternative `("video",)`.
+An audiovisual scorer can declare `("video", "audio")` as one joint set.
+
+Algorithms declare `FeedbackMode.DIFFERENTIABLE_REWARD` and resolve available media
+through `get_reward_gradient_fields(args)`. ReFL takes these fields from its model
+adapter. Configuration chooses one compatible complete input set per scorer before
+loading weights. A video scorer and an audio scorer can consume different outputs of
+one audiovisual decoder. Unsupported combinations fail early.
+
+Optimization-stage scoring runs synchronously, freezes scorer parameters in eval
+mode and retains input derivatives. The algorithm owns the loss transform and
+reduction. Use `eval_rewards` for OCR, remote API and other observation-only scores.
 
 `DifferentiableRewardProcessor` reuses configured source applicability, batch sizes and
 weights. It returns aligned scores and weights, with zeros outside applicability, while

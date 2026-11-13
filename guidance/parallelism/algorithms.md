@@ -89,7 +89,9 @@ under a changed TP/CP topology. The [configuration guide](configuration.md) expl
 
 ## ReFL input-gradient training
 
-ReFL adds a distinct optimization-stage feedback path. Initial decoder admission covers
-SD3.5 and FLUX.1 images. Selected evidence covers native SD3.5 DDP continuation and FLUX.1
-FSDP2 TP2/SP/CP2/DP2 with replicated reward/decoder components. Pretrained PickScore has
-an additional single-GPU end-to-end test. See [ReFL](../training/refl.md).
+ReFL uses optimization-stage differentiable feedback across all 19 registered image,
+video and audiovisual adapters. The policy retains each model's existing parallel layouts.
+Reward and decoder components are replicated and frozen, with their input gradients enabled.
+Selected evidence includes native SD3.5 DDP continuation, FLUX.1 TP/SP/CP gradient controls,
+and eight-GPU LTX2 I2AV FSDP2 TP2/SP/CP2/DP2 joint video/audio training.
+See [ReFL](../training/refl.md) for model and reward modality coverage.

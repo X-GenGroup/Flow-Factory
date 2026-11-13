@@ -16397,6 +16397,7 @@ cases:
     reward: varying
   artifacts:
   - tests/trainers/test_refl.py
+  - tests/trainers/test_refl_model_contracts.py
   cost_seconds: 10
   resources:
     gpus: 0
@@ -16419,6 +16420,7 @@ cases:
   - pytest
   - -q
   - tests/trainers/test_refl.py
+  - tests/trainers/test_refl_model_contracts.py
   fixture: Independent CPU clean-prediction derivative and production optimize controls;
     registry, decoder and reward admission.
 - facets:
@@ -16604,3 +16606,1211 @@ cases:
   - tests/distributed/test_refl_real_reward.py
   fixture: Native tiny SD3.5 with cached pretrained PickScore a4e4367c6dfa7288a00c550414478f865b875800;
     two real reward-to-policy updates.
+
+- id: refl-native-sd3-5
+  covers:
+  - algorithm.refl.model.sd3_5
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  fixture: Native small sd3-5 policy, frozen decoder and analytic differentiable media scorer; two complete
+    acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[sd3-5]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/sd35_coupled_fixture.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-flux1
+  covers:
+  - algorithm.refl.model.flux1
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/flux/flux1.py
+  fixture: Native small flux1 policy, frozen decoder and analytic differentiable media scorer; two complete
+    acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[flux1]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-flux1-kontext
+  covers:
+  - algorithm.refl.model.flux1_kontext
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/flux/flux1_kontext.py
+  fixture: Native small flux1-kontext policy, frozen decoder and analytic differentiable media scorer;
+    two complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[flux1-kontext]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_kontext_coupled_fixture.py
+  - tests/distributed/flux_kontext_cp_fixture.py
+  - tests/distributed/flux_kontext_sp_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-flux2
+  covers:
+  - algorithm.refl.model.flux2
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/flux/flux2.py
+  fixture: Native small flux2 policy, frozen decoder and analytic differentiable media scorer; two complete
+    acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[flux2]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux2_coupled_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux2_dev_coupled_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-flux2-klein
+  covers:
+  - algorithm.refl.model.flux2_klein
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/flux/flux2_klein.py
+  fixture: Native small flux2-klein policy, frozen decoder and analytic differentiable media scorer; two
+    complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[flux2-klein]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux2_coupled_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux2_klein4b_coupled_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-flux3
+  covers:
+  - algorithm.refl.model.flux3
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/flux/flux3.py
+  fixture: Native small flux3 policy, frozen decoder and analytic differentiable media scorer; two complete
+    acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[flux3]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux3_base_coupled_fixture.py
+  - tests/distributed/flux3_coupled_fixture.py
+  - tests/distributed/flux3_cp_fixture.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-qwen-image
+  covers:
+  - algorithm.refl.model.qwen_image
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  fixture: Native small qwen-image policy, frozen decoder and analytic differentiable media scorer; two
+    complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[qwen-image]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-qwen-image-edit-plus
+  covers:
+  - algorithm.refl.model.qwen_image_edit_plus
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  fixture: Native small qwen-image-edit-plus policy, frozen decoder and analytic differentiable media
+    scorer; two complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[qwen-image-edit-plus]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/qwen_edit_coupled_fixture.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-qwen-image-2.1
+  covers:
+  - algorithm.refl.model.qwen_image_2.1
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/qwen_image_21/qwen_image_21.py
+  fixture: Native small qwen-image-2.1 policy, frozen decoder and analytic differentiable media scorer;
+    two complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[qwen-image-2.1]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/qwen21_coupled_fixture.py
+  - tests/distributed/qwen21_cp_fixture.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-z-image
+  covers:
+  - algorithm.refl.model.z_image
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/z_image/z_image.py
+  fixture: Native small z-image policy, frozen decoder and analytic differentiable media scorer; two complete
+    acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[z-image]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/flux_coupled_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  - tests/distributed/z_image_coupled_fixture.py
+  - tests/distributed/z_image_cp_fixture.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-wan2-t2v
+  covers:
+  - algorithm.refl.model.wan2_t2v
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/wan/wan2_t2v.py
+  fixture: Native small wan2_t2v policy, frozen decoder and analytic differentiable media scorer; two
+    complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[wan2_t2v]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-wan2-i2v
+  covers:
+  - algorithm.refl.model.wan2_i2v
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/wan/wan2_i2v.py
+  fixture: Native small wan2_i2v policy, frozen decoder and analytic differentiable media scorer; two
+    complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[wan2_i2v]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  - tests/distributed/wan_i2v_expanded_coupled_fixture.py
+  - tests/distributed/wan_overlap_fixture.py
+  - tests/distributed/wan_remaining_coupled_fixture.py
+  - tests/distributed/wan_remaining_cp_fixture.py
+  - tests/distributed/wan_sft_fixture.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-bagel
+  covers:
+  - algorithm.refl.model.bagel
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/bagel/bagel.py
+  fixture: Native small bagel policy, frozen decoder and analytic differentiable media scorer; two complete
+    acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[bagel]
+  artifacts:
+  - tests/distributed/bagel_coupled_fixture.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    - flash-attn
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-sensenova
+  covers:
+  - algorithm.refl.model.sensenova
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/sensenova/sensenova.py
+  fixture: Native small sensenova policy, frozen decoder and analytic differentiable media scorer; two
+    complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[sensenova]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/qwen_coupled_fixture.py
+  - tests/distributed/qwen_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/sensenova_coupled_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/sensenova_u15_coupled_fixture.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-ltx2-t2av
+  covers:
+  - algorithm.refl.model.ltx2_t2av
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/ltx2/ltx2_t2av.py
+  fixture: Native small ltx2_t2av policy, frozen decoder and analytic differentiable media scorer; two
+    complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[ltx2_t2av]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/ltx20_t2av_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-ltx2-i2av
+  covers:
+  - algorithm.refl.model.ltx2_i2av
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/ltx2/ltx2_i2av.py
+  fixture: Native small ltx2_i2av policy, frozen decoder and analytic differentiable media scorer; two
+    complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[ltx2_i2av]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/ltx23_i2av_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-minimax-h3-t2va
+  covers:
+  - algorithm.refl.model.minimax_h3_t2va
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/minimax_h3/adapters.py
+  fixture: Native small minimax-h3-t2va policy, frozen decoder and analytic differentiable media scorer;
+    two complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[minimax-h3-t2va]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-minimax-h3-fl2va
+  covers:
+  - algorithm.refl.model.minimax_h3_fl2va
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/minimax_h3/adapters.py
+  fixture: Native small minimax-h3-fl2va policy, frozen decoder and analytic differentiable media scorer;
+    two complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[minimax-h3-fl2va]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_fl2va_coupled_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-native-minimax-h3-ref2va
+  covers:
+  - algorithm.refl.model.minimax_h3_ref2va
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/minimax_h3/adapters.py
+  fixture: Native small minimax-h3-ref2va policy, frozen decoder and analytic differentiable media scorer;
+    two complete acquisition/update cycles.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_model_closure[minimax-h3-ref2va]
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/h3_coupled_fixture.py
+  - tests/distributed/h3_cp_fixture.py
+  - tests/distributed/h3_ref2va_coupled_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+- id: refl-joint-tp-cp
+  covers:
+  - algorithm.refl.joint_tp_cp
+  facets:
+  - model_adapter
+  - feedback
+  - objective
+  owners:
+  - src/flow_factory/models/ltx2/ltx2_i2av.py
+  fixture: Native LTX2 I2AV with actual first-frame conditioning, both AV decoders and a joint differentiable
+    reward.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 8
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 2
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Elementwise native-decoder value parity, live media/latent derivatives, nonzero policy
+      updates and frozen auxiliaries.
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_refl_models.py::test_cuda_refl_joint_tp_sp_cp
+  artifacts:
+  - tests/distributed/conftest.py
+  - tests/distributed/ltx23_i2av_coupled_fixture.py
+  - tests/distributed/ltx2_coupled_fixture.py
+  - tests/distributed/ltx2_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - tests/distributed/test_refl_models.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 50
+  resources:
+    gpus: 8
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    - av
+    - torchaudio
+    environment:
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
+    model_paths: []
+  execution_capability: ltx2-refl-cp-v1
+
+- facets:
+  - objective
+  - feedback
+  owners:
+  - tests/models/test_classic_image_output_codecs.py
+  - tests/models/minimax_h3/test_workflow_execution.py
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Closed-form gradient, two policy updates, invalid solver/media/reward admission and recipe
+      parsing.
+    reward: varying
+  artifacts:
+  - tests/models/test_classic_image_output_codecs.py
+  - tests/models/minimax_h3/test_workflow_execution.py
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages:
+    - torch
+    - pytest
+    - transformers
+    - diffusers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+  id: refl-decoder-regressions
+  covers:
+  - algorithm.refl.decoder_regressions
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/models/test_classic_image_output_codecs.py
+  - tests/models/minimax_h3/test_workflow_execution.py
+  fixture: Existing image offline codec and H3 workflow regressions with current replay and image-schema
+    fixtures.

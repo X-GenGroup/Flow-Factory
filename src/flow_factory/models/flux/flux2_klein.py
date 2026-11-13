@@ -87,6 +87,8 @@ CONDITION_IMAGE_SIZE = (1024, 1024)
 
 
 class Flux2KleinAdapter(Flux2ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin, BaseAdapter):
+
+    differentiable_decode_fields = ("image",)
     _flux2_guidance_embeds = False
     supports_diffusers_cache = True
     pipeline_io_contract = image_output_contract(

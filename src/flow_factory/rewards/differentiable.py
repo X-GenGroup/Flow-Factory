@@ -25,10 +25,13 @@ from .abc import BaseRewardModel, PointwiseRewardModel
 from .registry import get_reward_model_class
 
 
-def validate_differentiable_rewards(configs, input_fields: tuple[str, ...]) -> None:
+def validate_differentiable_rewards(
+    configs, input_fields: tuple[str, ...]
+) -> dict[str, tuple[str, ...]]:
     """Validate model declarations and scheduling before constructing networks."""
     if not input_fields or not configs:
         raise ValueError("differentiable feedback requires input fields and training rewards")
+    selected = {}
     for config in configs:
         try:
             cls = get_reward_model_class(config.reward_model)
@@ -40,7 +43,7 @@ def validate_differentiable_rewards(configs, input_fields: tuple[str, ...]) -> N
         capability = getattr(cls, "gradient_capability", None)
         if (
             not isinstance(capability, RewardGradientCapability)
-            or not set(input_fields).issubset(capability.input_fields)
+            or not capability.select_input_fields(input_fields)
             or cls.score_differentiable is BaseRewardModel.score_differentiable
         ):
             raise ValueError(
@@ -57,6 +60,8 @@ def validate_differentiable_rewards(configs, input_fields: tuple[str, ...]) -> N
             raise ValueError(
                 f"reward {config.name!r} requires synchronous optimization-stage scoring; async_reward=True"
             )
+        selected[config.name] = capability.select_input_fields(input_fields)
+    return selected
 
 
 @dataclass(frozen=True)
@@ -81,7 +86,9 @@ class DifferentiableRewardProcessor:
         configs: Mapping[str, RewardArguments],
         input_fields: tuple[str, ...],
     ):
-        validate_differentiable_rewards(list(configs.values()), input_fields)
+        self.reward_input_fields = validate_differentiable_rewards(
+            list(configs.values()), input_fields
+        )
         self.models = dict(models)
         self.configs = dict(configs)
         self.input_fields = input_fields
@@ -100,8 +107,15 @@ class DifferentiableRewardProcessor:
                 f"expected differentiable media {self.input_fields!r}, received {tuple(media)!r}"
             )
         device = next(iter(media.values())).device
+        required_fields = {
+            field for fields in self.reward_input_fields.values() for field in fields
+        }
         for name, value in media.items():
-            if value.shape[0] != len(prompt) or not value.requires_grad or value.device != device:
+            if (
+                value.shape[0] != len(prompt)
+                or value.device != device
+                or (name in required_fields and not value.requires_grad)
+            ):
                 raise ValueError(
                     f"{name} must carry input gradients, batch={len(prompt)}, device={device}"
                 )
@@ -117,7 +131,9 @@ class DifferentiableRewardProcessor:
             for start in range(0, len(indices), config.batch_size):
                 chunk = indices[start : start + config.batch_size]
                 index = torch.tensor(chunk, device=device)
-                inputs = {key: value.index_select(0, index) for key, value in media.items()}
+                inputs = {
+                    key: media[key].index_select(0, index) for key in self.reward_input_fields[name]
+                }
                 with (
                     torch.enable_grad(),
                     torch.autocast(device_type=model.device.type, enabled=False),

@@ -155,7 +155,7 @@ acceleration:
 | Offline DPO    | offline-dpo    | [Diffusion-DPO](https://arxiv.org/abs/2311.12908) over V2 preference pairs |
 | Online DPO     | dpo            | [Diffusion-DPO](https://arxiv.org/abs/2311.12908) with generated, reward-ranked pairs |
 | GRPO           | grpo           | [Flow-GRPO](https://arxiv.org/abs/2505.05470) / [Dance-GRPO](https://arxiv.org/abs/2505.07818) |
-| ReFL           | refl           | [Usage and flow-matching adaptation](guidance/training/refl.md) |
+| ReFL           | refl           | [Image, video and AV support](guidance/training/refl.md) |
 | DiffusionART   | art            | [DiffusionART](https://arxiv.org/abs/2610.12572) · [usage](guidance/training/art.md) |
 | DiffusionNFT   | nft            | [DiffusionNFT](https://arxiv.org/abs/2509.16117) |
 | AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |

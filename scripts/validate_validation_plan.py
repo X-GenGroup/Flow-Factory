@@ -286,6 +286,7 @@ def validate_topology(case: dict) -> None:
                     "wan-nft-cp-v1",
                     "wan-art-cp-v1",
                     "flux-refl-cp-v1",
+                    "ltx2-refl-cp-v1",
                     "wan-dgpo-cp-v1",
                     "wan-opd-cp-v1",
                     "wan-tdm-cp-v1",
@@ -319,7 +320,11 @@ def validate_topology(case: dict) -> None:
             )
             if case["execution_capability"] == "wan-sft-ulysses-bf16-v1":
                 require(topo["tp"] == 1, f"{name}: CP-only capability runs without TP/replication")
-            elif case["execution_capability"] in {"wan-art-cp-v1", "flux-refl-cp-v1"}:
+            elif case["execution_capability"] in {
+                "wan-art-cp-v1",
+                "flux-refl-cp-v1",
+                "ltx2-refl-cp-v1",
+            }:
                 require(
                     topo["tp"] == 2 and topo["cp"] == 2 and topo["dp_shard"] == 2,
                     f"{name}: ART/ReFL composition evidence requires DP2 TP2 CP2",
@@ -436,6 +441,7 @@ def validate_topology(case: dict) -> None:
                     "wan-nft-cp-v1",
                     "wan-art-cp-v1",
                     "flux-refl-cp-v1",
+                    "ltx2-refl-cp-v1",
                     "wan-dgpo-cp-v1",
                     "wan-tdm-r1-cp-v1",
                     "flux-grpo-guard-cp-v1",

@@ -369,6 +369,7 @@ def test_kontext_condition_encoding_uses_explicit_posterior_argmax() -> None:
 def test_kontext_flattens_one_condition_image_per_offline_sample() -> None:
     """GeneralDataset's nested single-image batch remains valid for Kontext."""
     adapter = object.__new__(Flux1KontextAdapter)
+    adapter.accelerator = SimpleNamespace(num_processes=1, process_index=0)
     adapter._has_warned_multi_image = False
     first = Image.new("RGB", (WIDTH, HEIGHT), color="red")
     second = Image.new("RGB", (WIDTH, HEIGHT), color="blue")

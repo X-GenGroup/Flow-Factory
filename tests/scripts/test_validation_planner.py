@@ -2126,6 +2126,32 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
     ],
 )
 def test_flux_leaf_artifact_changes_select_genuine_consumers(path, expected):
+    refl_consumers = {
+        "flux_sft_fixture.py": {
+            "refl-native-sd3-5",
+            "refl-native-flux1",
+            "refl-native-flux1-kontext",
+            "refl-native-flux2",
+            "refl-native-flux2-klein",
+            "refl-native-flux3",
+            "refl-native-z-image",
+        },
+        "qwen_cp_fixture.py": {
+            "refl-native-qwen-image",
+            "refl-native-qwen-image-edit-plus",
+            "refl-native-qwen-image-2.1",
+            "refl-native-bagel",
+            "refl-native-sensenova",
+        },
+        "qwen_coupled_fixture.py": {
+            "refl-native-qwen-image",
+            "refl-native-qwen-image-edit-plus",
+            "refl-native-qwen-image-2.1",
+            "refl-native-bagel",
+            "refl-native-sensenova",
+        },
+    }
+    expected = expected | refl_consumers.get(path, set())
     path = "tests/distributed/" + path
     scope = {
         "paths": [path],
@@ -4553,3 +4579,30 @@ def test_refl_decoder_declarations_select_derivatives_without_reopening_model_pl
     )
     assert "review.owner:" not in text
     assert "parallel.tp_parity" not in text
+
+
+def test_refl_model_decode_routes_keep_each_model_and_prepared_joint_witness():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    semantic = {
+        "src/flow_factory/models/abc.py": ["BaseAdapter._decode_differentiable_state"],
+        "src/flow_factory/models/ltx2/_output.py": ["decode_ltx2_differentiable_state"],
+        "src/flow_factory/models/minimax_h3/blocks.py": ["run_h3_blocks"],
+    }
+    scope = {
+        "paths": list(semantic),
+        "semantic_symbols": semantic,
+        "scope_complete": True,
+        "facets": [],
+        "uninspected": [],
+    }
+    requirements = planner.infer_requirements(scope, policy, semantic)
+    obligations = requirements["obligations"]
+    assert "algorithm.refl.joint_tp_cp" in obligations
+    models = [key for key in obligations if key.startswith("algorithm.refl.model.")]
+    assert len(models) == 19
+    assert not any(key.startswith("review.") for key in obligations)
+    # A denoiser/parallel-plan edit must still select its original family contract.
+    semantic = {"src/flow_factory/models/flux/flux2.py": ["Flux2Adapter._forward"]}
+    scope.update(paths=list(semantic), semantic_symbols=semantic)
+    requirements = planner.infer_requirements(scope, policy, semantic)
+    assert "model.flux2.cp_reference" in requirements["obligations"]

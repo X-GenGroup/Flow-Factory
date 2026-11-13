@@ -139,6 +139,8 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
     packs.
     """
 
+    differentiable_decode_fields = ("image",)
+
     preprocess_cache_version: ClassVar[str] = "flux3-native-reference-canvas-v2"
     supports_diffusers_cache: ClassVar[bool] = False
     supports_fsdp2_cpu_efficient_loading: ClassVar[bool] = True

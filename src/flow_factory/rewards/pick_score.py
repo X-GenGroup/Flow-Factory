@@ -44,7 +44,9 @@ def _extract_feature_tensor(output: Any) -> torch.Tensor:
 
 
 class PickScoreRewardModel(PointwiseRewardModel):
-    gradient_capability = RewardGradientCapability(input_fields=("image",))
+    gradient_capability = RewardGradientCapability(
+        input_fields=("image",), alternative_input_fields=(("video",),)
+    )
     required_fields = ("prompt", "image", "video")
 
     def __init__(self, config: RewardArguments, accelerator: Accelerator):
@@ -60,15 +62,39 @@ class PickScoreRewardModel(PointwiseRewardModel):
             cached_file(processor_path, "preprocessor_config.json", local_files_only=True), None
         )
 
-    def score_differentiable(self, *, prompt: list[str], image: torch.Tensor) -> RewardModelOutput:
-        """Score BCHW floating RGB pixels in [0, 1], preserving image gradients.
+    def score_differentiable(
+        self,
+        *,
+        prompt: list[str],
+        image: torch.Tensor | None = None,
+        video: torch.Tensor | None = None,
+    ) -> RewardModelOutput:
+        """Score BCHW images or BFCHW videos, preserving pixel gradients.
 
+        RGB/RGBA pixels use floating [0, 1]. Videos average every frame's score.
         Tensor bicubic interpolation avoids PIL quantization. The ordinary PIL
         path remains the evaluation reference, with its own quantization tolerance.
         Scores use the same logit scale and /26 normalization as ordinary scoring.
         """
         from .tensor_preprocessing import clip_image_preprocess
 
+        if (image is None) == (video is None):
+            raise ValueError("PickScore requires exactly one image or video tensor")
+        if video is not None:
+            if video.ndim != 5 or video.shape[0] != len(prompt) or video.shape[1] == 0:
+                raise ValueError(
+                    "differentiable PickScore video requires BFCHW with nonzero frames"
+                )
+            # Match ordinary video scoring's mean over every frame, reusing the
+            # image path and retaining every frame's derivative.
+            scores = [
+                self.score_differentiable(prompt=prompt, image=frame).rewards
+                for frame in video.unbind(1)
+            ]
+            return RewardModelOutput(rewards=torch.stack(scores, dim=1).mean(1))
+        if image.ndim == 4 and image.shape[1] == 4:
+            # CLIP's ordinary PIL convert("RGB") drops alpha for RGBA images.
+            image = image[:, :3]
         pixels = clip_image_preprocess(image, self.processor.image_processor)
         pixels = pixels.to(device=self.device, dtype=self.model.dtype)
         text = self.processor(

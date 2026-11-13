@@ -644,6 +644,7 @@ def decode_h3_adapter_latents(adapter: Any, latents: Any, **kwargs: Any) -> Any:
         kwargs["geometry"],
         output_type=kwargs.get("output_type", "pt"),
         workflow=adapter.workflow,
+        input_gradients=kwargs.get("input_gradients", False),
     )
 
 

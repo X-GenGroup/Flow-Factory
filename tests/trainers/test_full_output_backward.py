@@ -174,7 +174,7 @@ def _r1_trainer():
 def _art_trainer():
     """Exercise the production ART group/replay/optimizer path with a scalar policy."""
     from flow_factory.hparams import ARTTrainingArguments
-    from flow_factory.samples import BaseSample, LatentState
+    from flow_factory.samples import BaseSample, ComponentTimes, LatentState
 
     cls = get_trainer_class("art")
     trainer = object.__new__(cls)
@@ -198,7 +198,10 @@ def _art_trainer():
     replay = SimpleNamespace(
         state=state,
         next_state=state,
-        times=SimpleNamespace(timestep={"latent": torch.tensor([500.0])}),
+        times=ComponentTimes(
+            timestep={"latent": torch.tensor([500.0])},
+            next_timestep={"latent": torch.tensor([0.0])},
+        ),
     )
     trainer.adapter = SimpleNamespace(
         trajectory_component_order=("latent",),

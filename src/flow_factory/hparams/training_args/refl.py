@@ -27,7 +27,6 @@ class ReFLTrainingArguments(TrainingArguments):
     """Select one saved transition per microbatch and optimize its clean prediction."""
 
     execution_contract: ClassVar[ExecutionContract] = DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT
-    reward_gradient_fields: ClassVar[tuple[str, ...]] = ("image",)
     trainer_type: Literal["refl"] = field(default="refl")
     group_size: int = field(default=1)
     ema_decay: float = field(default=0.0)
@@ -64,5 +63,17 @@ class ReFLTrainingArguments(TrainingArguments):
             raise ValueError("ReFL requires at least one retained replay transition")
         if args.acceleration_args.rollout:
             raise ValueError("ReFL requires matching rollout and replay forwards")
-        if "vae" in args.model_args.target_components:
-            raise ValueError("ReFL requires a frozen decoder; vae cannot be a policy target")
+        from ...models.registry import get_model_adapter_class
+
+        adapter_cls = get_model_adapter_class(args.model_args.model_type)
+        targeted_decoders = set(args.model_args.target_components).intersection(
+            adapter_cls.differentiable_decode_modules
+        )
+        if targeted_decoders:
+            raise ValueError(f"ReFL requires frozen decoders, targeted={sorted(targeted_decoders)}")
+
+    def get_reward_gradient_fields(self, args) -> tuple[str, ...]:
+        """Use the selected adapter's qualified media without a modality knob."""
+        from ...models.registry import get_model_adapter_class
+
+        return get_model_adapter_class(args.model_args.model_type).differentiable_decode_fields

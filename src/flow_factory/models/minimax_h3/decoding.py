@@ -84,6 +84,7 @@ def decode_h3_targets(
     *,
     output_type: str = "pil",
     workflow: str = "t2va",
+    input_gradients: bool = False,
 ) -> Tuple[Any, torch.Tensor, int]:
     """Decode B=1 target rows into video and stereo audio.
 
@@ -93,6 +94,7 @@ def decode_h3_targets(
         geometry: Cached latent geometry.
         output_type: Upstream video output type.
         workflow: Workflow identifier used in diagnostics.
+        input_gradients: Retain decoder input derivatives for reward optimization.
 
     Returns:
         Video output, stereo audio tensor, and sample rate.
@@ -129,6 +131,7 @@ def decode_h3_targets(
             values,
             requested_outputs=("videos", "audio", "sampling_rate"),
             workflow=workflow,
+            input_gradients=input_gradients,
         )
     audio = outputs["audio"]
     sampling_rate = outputs["sampling_rate"]

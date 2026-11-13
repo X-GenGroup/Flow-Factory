@@ -19,15 +19,30 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class RewardGradientCapability:
-    """Name media inputs whose complete scoring path preserves derivatives."""
+    """Declare complete differentiable input sets, in preference order.
+
+    Each set names inputs consumed together. Alternatives let an image scorer
+    also implement a video path without requiring both media in one request.
+    """
 
     input_fields: tuple[str, ...]
+    alternative_input_fields: tuple[tuple[str, ...], ...] = ()
 
     def __post_init__(self) -> None:
-        if (
-            not isinstance(self.input_fields, tuple)
-            or not self.input_fields
-            or any(name not in ("image", "video", "audio") for name in self.input_fields)
-            or len(set(self.input_fields)) != len(self.input_fields)
-        ):
-            raise ValueError(f"invalid reward gradient input_fields={self.input_fields!r}")
+        if not isinstance(self.alternative_input_fields, tuple):
+            raise ValueError("reward gradient alternative_input_fields must be a tuple")
+        for fields in (self.input_fields, *self.alternative_input_fields):
+            if (
+                not isinstance(fields, tuple)
+                or not fields
+                or any(name not in ("image", "video", "audio") for name in fields)
+                or len(set(fields)) != len(fields)
+            ):
+                raise ValueError(f"invalid reward gradient input_fields={fields!r}")
+
+    def select_input_fields(self, available: tuple[str, ...]) -> tuple[str, ...]:
+        """Choose one complete input set supported by the model output."""
+        for fields in (self.input_fields, *self.alternative_input_fields):
+            if set(fields).issubset(available):
+                return fields
+        return ()

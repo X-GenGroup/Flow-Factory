@@ -199,6 +199,8 @@ class BagelAdapter(BaseAdapter):
       4. CFG uses separate pre-computed KV caches for text-only and image-only conditions.
     """
 
+    differentiable_decode_fields = ("image",)
+
     supports_sharded_target_materialization = True
 
     context_parallel_capability = ContextParallelCapability(
@@ -745,6 +747,14 @@ class BagelAdapter(BaseAdapter):
 
     # ======================== Decoding ========================
 
+    def _decode_differentiable_state(self, state, *, batch):
+        """Stack native per-sample packed decodes without a media conversion."""
+        return {
+            "image": torch.stack(
+                self.decode_latents(state.components["latent"], image_shape=batch["image_shape"])
+            )
+        }
+
     def decode_latents(
         self,
         latents: torch.Tensor,
@@ -780,7 +790,8 @@ class BagelAdapter(BaseAdapter):
             lat = lat.reshape(1, h, w, p, p, ch)
             lat = torch.einsum("nhwpqc->nchpwq", lat)
             lat = lat.reshape(1, ch, h * p, w * p)
-            decoded = vae.decode(lat.to(vae.dtype if hasattr(vae, "dtype") else torch.bfloat16))
+            vae_dtype = vae.dtype if hasattr(vae, "dtype") else next(vae.parameters()).dtype
+            decoded = vae.decode(lat.to(vae_dtype))
             decoded = signed_unit_to_unit_pixels(decoded)[0].float()
             images.append(decoded)
 

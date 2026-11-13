@@ -85,3 +85,16 @@ def test_cuda_sd35_refl_real_pickscore(tmp_path):
         )
     finally:
         trainer.cleanup(wait=True)
+
+
+@pytest.mark.skipif(
+    os.environ.get("FF_TEST_REAL_REWARD") != "1", reason="selected real-weight CUDA evidence"
+)
+def test_cuda_wan_refl_real_pickscore(tmp_path):
+    from test_refl_models import build_model_fixture, train_model
+
+    torch.cuda.set_device(0)
+    build_model_fixture(tmp_path / "fixture", "wan2_t2v")
+    result = train_model(tmp_path, "wan2_t2v", real_reward=True)
+    assert set(result["media_gradient_norms"]) == {"video"}
+    assert result["reward_revision"]

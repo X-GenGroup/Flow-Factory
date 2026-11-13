@@ -42,3 +42,31 @@ class PixelReward(PointwiseRewardModel):
         return self.score_differentiable(
             prompt=prompt, image=torch.stack(image) if isinstance(image, list) else image
         )
+
+
+class MediaReward(PointwiseRewardModel):
+    """Frozen analytic signal for image, video and joint audiovisual graphs."""
+
+    gradient_capability = RewardGradientCapability(
+        input_fields=("video", "audio"), alternative_input_fields=(("video",), ("image",))
+    )
+    required_fields = ("prompt", "image", "video", "audio")
+    use_tensor_inputs = True
+
+    def __init__(self, config, accelerator):
+        super().__init__(config, accelerator)
+        self.model = nn.Linear(1, 1, bias=False).to(self.device).requires_grad_(False)
+        with torch.no_grad():
+            self.model.weight.fill_(0.5)
+
+    def score_differentiable(self, *, prompt, **media):
+        scores = []
+        for value in media.values():
+            # Nonlinear, nonconstant derivative also exercises native audio decoders.
+            mean = (value.float().square() + 0.3 * value.float()).flatten(1).mean(1)
+            scores.append(self.model(mean[:, None]).squeeze(-1))
+        return RewardModelOutput(rewards=torch.stack(scores).sum(0))
+
+    @torch.no_grad()
+    def __call__(self, *, prompt, **media):
+        return self.score_differentiable(prompt=prompt, **media)

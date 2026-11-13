@@ -258,6 +258,7 @@ def _config(target_components: List[str]) -> SimpleNamespace:
             noise_level=0.7,
             sde_steps=[0, 2],
             num_sde_steps=1,
+            replay_steps="auto",
             seed=17,
         ),
         mixed_precision="no",

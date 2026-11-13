@@ -221,6 +221,9 @@ class SenseNovaAdapter(BaseAdapter):
     standalone Flow-Factory VAE or text encoder.
     """
 
+    differentiable_decode_fields = ("image",)
+    differentiable_decode_modules = ()
+
     supports_sharded_target_materialization = True
 
     context_parallel_capability = ContextParallelCapability(

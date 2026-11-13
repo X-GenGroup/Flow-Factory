@@ -20,8 +20,11 @@ import torch
 import torch.nn.functional as F
 
 from ...contracts.execution import DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT
-from ...samples import BaseSample
+from ...models.trajectory_bridge import resolve_replay_projection_times
+from ...models.trajectory_bridge.masks import _expand_active_mask
+from ...samples import BaseSample, LatentState
 from ...scheduler.flow_match_euler_discrete import FlowMatchEulerDiscreteSDEScheduler
+from ...scheduler.minimax_h3 import MiniMaxH3SDEScheduler
 from ...utils.trajectory_collector import compute_trajectory_indices
 from ..abc import BaseTrainer
 from ..common.context_parallel import ContextParallelTrainingCapability
@@ -42,27 +45,29 @@ class ReFLTrainer(BaseTrainer):
 
     @classmethod
     def validate_adapter_class_execution_contract(cls, adapter_cls: type) -> None:
-        """Require an explicitly qualified image decoder before loading weights."""
+        """Require qualified model-owned input-gradient decoding before loading."""
         super().validate_adapter_class_execution_contract(adapter_cls)
-        if adapter_cls.__dict__.get("differentiable_decode_fields") != ("image",):
+        if not adapter_cls.differentiable_decode_fields:
             raise ValueError(
-                f"ReFL requires declared image input-gradient decoding, received {adapter_cls.__name__}"
+                f"ReFL requires declared input-gradient decoding, received {adapter_cls.__name__}"
             )
 
     def _validate_paradigm_dynamics(self) -> None:
         scheduler = self.adapter.scheduler
         if (
-            not isinstance(scheduler, FlowMatchEulerDiscreteSDEScheduler)
+            not isinstance(scheduler, (FlowMatchEulerDiscreteSDEScheduler, MiniMaxH3SDEScheduler))
             or scheduler.dynamics_type != "ODE"
         ):
             raise ValueError(
-                f"ReFL requires the Euler flow ODE scheduler, received {type(scheduler).__name__}"
+                f"ReFL requires an admitted flow ODE scheduler, received {type(scheduler).__name__} "
+                f"with dynamics_type={getattr(scheduler, 'dynamics_type', None)!r}"
             )
 
     def _initialize_snapshots(self) -> None:
         """Keep decoder parameters frozen while allowing gradients to its input."""
         super()._initialize_snapshots()
-        self.adapter._require_component("vae").eval().requires_grad_(False)
+        for name in self.adapter.differentiable_decode_modules:
+            self.adapter._require_component(name).eval().requires_grad_(False)
 
     def runtime_execution_identity_payload(self) -> dict:
         """Bind resolved scorer revisions and preprocessing to drained continuation."""
@@ -75,6 +80,7 @@ class ReFLTrainer(BaseTrainer):
             scorers[name] = {
                 "class": f"{type(scorer).__module__}.{type(scorer).__qualname__}",
                 "gradient_fields": scorer.gradient_capability.input_fields,
+                "gradient_alternatives": scorer.gradient_capability.alternative_input_fields,
                 "model_revision": getattr(
                     scorer, "resolved_model_revision", getattr(config, "_commit_hash", None)
                 ),
@@ -124,12 +130,29 @@ class ReFLTrainer(BaseTrainer):
                             return_fields=("velocity",),
                             **replay_forward_kwargs(self, batch),
                         )
-                        projection_times = self.adapter.build_training_component_times(
-                            replay.times.timestep["latent"], batch=batch
+                        projection_times = resolve_replay_projection_times(
+                            self.adapter, replay.times, batch=batch
                         )
                         clean = self.adapter.project_velocity_to_clean_state(
                             replay.state, projection_times, output.velocity
                         )
+                        if clean.active_masks is not None:
+                            clean = LatentState(
+                                {
+                                    name: torch.where(
+                                        _expand_active_mask(
+                                            clean.active_masks[name],
+                                            value,
+                                            component=name,
+                                            operation="reward projection",
+                                        ),
+                                        value,
+                                        replay.state.components[name],
+                                    )
+                                    for name, value in clean.components.items()
+                                },
+                                active_masks=clean.active_masks,
+                            )
                         media = self.adapter.decode_differentiable_state(clean, batch=batch)
                     source_names = self._reward_source_names(batch.samples)
                     feedback = self.differentiable_feedback(

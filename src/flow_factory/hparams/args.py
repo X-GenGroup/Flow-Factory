@@ -297,7 +297,7 @@ class Arguments(ArgABC):
             from ..rewards.differentiable import validate_differentiable_rewards
 
             validate_differentiable_rewards(
-                self.reward_args, self.training_args.reward_gradient_fields
+                self.reward_args, self.training_args.get_reward_gradient_fields(self)
             )
         if self._get_execution_contract().feedback is FeedbackMode.NONE and self.reward_args:
             raise ValueError(

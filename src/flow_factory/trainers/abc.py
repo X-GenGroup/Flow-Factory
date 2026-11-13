@@ -1069,7 +1069,9 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
             from ..rewards.differentiable import DifferentiableRewardProcessor
 
             self.differentiable_feedback = DifferentiableRewardProcessor(
-                self.reward_models, train_reward_configs, self.training_args.reward_gradient_fields
+                self.reward_models,
+                train_reward_configs,
+                self.training_args.get_reward_gradient_fields(self.config),
             )
         self.reward_processor: Optional[RewardProcessor] = None
         self.reward_buffer: Optional[RewardBuffer] = None

@@ -13,6 +13,7 @@
 
 """Execute frozen pinned MiniMax H3 modular blocks over shared state."""
 
+from inspect import unwrap
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
@@ -62,6 +63,7 @@ def run_h3_blocks(
     *,
     requested_outputs: Sequence[str],
     workflow: str = "shared",
+    input_gradients: bool = False,
 ) -> Dict[str, Any]:
     """Run ordered upstream blocks and select promised state fields.
 
@@ -71,6 +73,7 @@ def run_h3_blocks(
         values: Initial state values.
         requested_outputs: Fields promised to the caller.
         workflow: Workflow identifier used in diagnostics.
+        input_gradients: Execute native block bodies with input derivatives enabled.
 
     Returns:
         Requested values preserving upstream object identity.
@@ -78,7 +81,12 @@ def run_h3_blocks(
     symbols = require_minimax_h3_support()
     state = symbols.PipelineState(values=dict(values))
     for block in blocks:
-        result = block(pipeline, state)
+        # Native H3 decode blocks wrap __call__ in no_grad. Reward optimization
+        # executes the same tensor operations with their input graph retained.
+        if input_gradients:
+            result = unwrap(type(block).__call__)(block, pipeline, state)
+        else:
+            result = block(pipeline, state)
         if isinstance(result, tuple) and len(result) == 2:
             pipeline, state = result
         else:

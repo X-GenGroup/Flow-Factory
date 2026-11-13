@@ -81,6 +81,8 @@ class WanT2VSample(T2VSample):
 
 
 class Wan2_T2V_Adapter(BaseAdapter):
+
+    differentiable_decode_fields = ("video",)
     supports_sharded_target_materialization = True
     supports_checkpoint_slice_loading = True
     compute_precision_policies = (

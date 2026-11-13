@@ -120,6 +120,7 @@ def test_production_optimize_matches_independent_reward_gradient_two_cycles():
     batch = Batch(prompt=["a bird"])
     native = object.__new__(SD3_5Adapter)
     adapter = SimpleNamespace(
+        trajectory_component_order=("latent",),
         train=lambda: None,
         get_train_step_indices=lambda: torch.tensor([2]),
         get_replay_step=lambda batch, step: SimpleNamespace(
