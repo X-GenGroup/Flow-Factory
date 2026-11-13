@@ -58,7 +58,7 @@ logger = setup_logger(__name__, rank_zero_only=True)
 # Bump when the on-disk preprocessed format changes in a backward-incompatible
 # way (e.g. image columns switched from raw tensors to the HF Image feature), so
 # stale caches written by an older format are not silently reused.
-_PREPROCESS_FORMAT_VERSION = 2
+_PREPROCESS_FORMAT_VERSION = 3
 
 # Column that carries raw per-sample JSONL fields (packed by ``_preprocess_batch``,
 # consumed by ``BaseTrainer._inject_batch_metadata`` via ``json.dumps``).
@@ -355,6 +355,8 @@ class GeneralDataset(Dataset):
         # the unsharded source before selecting the rank-local rows; otherwise an
         # all-empty optional-media shard can become ``List(null)`` while another
         # rank writes ``List(Image)`` and the merged cache cannot be loaded.
+        # A single-rank batched map also needs explicit Image metadata, otherwise
+        # cached PIL inputs reload as raw {bytes, path} dictionaries.
         if len(raw_dataset) == 0:
             # A whole empty source has no encoder output schema to infer. Preserve
             # its zero-row input schema without calling the encoder or inventing
@@ -370,7 +372,13 @@ class GeneralDataset(Dataset):
                 audio_dir=self.audio_dir,
                 force_reprocess=force_reprocess,
                 target_arrow_path=target_arrow_path,
-                require_explicit_features=bool(self.num_shards and self.num_shards > 1),
+                require_explicit_features=bool(
+                    (self.num_shards and self.num_shards > 1)
+                    or (
+                        self.image_dir is not None
+                        and {"image", "images"}.intersection(raw_dataset.column_names)
+                    )
+                ),
             )
 
         if self.num_shards and self.num_shards > 1:

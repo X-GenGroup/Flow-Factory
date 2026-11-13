@@ -908,6 +908,51 @@ class BaseAdapter(ABC):
         self._validate_encoded_output_geometry(validated_media, codec_condition, encoded)
         return encoded
 
+    differentiable_decode_fields: ClassVar[tuple[str, ...]] = ()
+    differentiable_decode_modules: ClassVar[tuple[str, ...]] = ("vae",)
+
+    def decode_differentiable_state(self, state: LatentState, *, batch) -> dict[str, torch.Tensor]:
+        """Decode live state under the generation precision policy and validate axes.
+
+        Images use BCHW, videos use BFCHW, and audio uses BCS. Adapter hooks
+        retain native geometry, packing, crop-back and joint-component semantics.
+        """
+        fields = self.differentiable_decode_fields
+        if not fields:
+            raise ValueError(f"{type(self).__name__} has no qualified differentiable decoder")
+        if state.component_names != self.trajectory_component_order:
+            raise ValueError(
+                f"decoder expected components {self.trajectory_component_order}, "
+                f"received {state.component_names}"
+            )
+        # Generation and optimization call native decoders inside the same policy
+        # autocast scope. Frozen weights still retain their configured load dtype.
+        media = self._decode_differentiable_state(state, batch=batch)
+        if tuple(media) != fields:
+            raise ValueError(f"decoder expected media {fields}, received {tuple(media)}")
+        dimensions = {"image": 4, "video": 5, "audio": 3}
+        batch_size = next(iter(state.components.values())).shape[0]
+        for name, value in media.items():
+            if (
+                not isinstance(value, torch.Tensor)
+                or value.ndim != dimensions[name]
+                or value.shape[0] != batch_size
+            ):
+                raise ValueError(
+                    f"differentiable {name} decoder must return batched tensors, "
+                    f"batch={batch_size}, ndim={dimensions[name]}, received "
+                    f"shape={getattr(value, 'shape', None)}"
+                )
+        return media
+
+    def _decode_differentiable_state(self, state: LatentState, *, batch):
+        """Reuse the native single-component image or video decoder."""
+        kwargs = filter_kwargs(
+            self.decode_latents,
+            **{**batch, "latents": state.components["latent"], "output_type": "pt"},
+        )
+        return {self.differentiable_decode_fields[0]: self.decode_latents(**kwargs)}
+
     def decode_output_state(
         self,
         encoded: EncodedOutputState,

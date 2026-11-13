@@ -163,7 +163,8 @@ def test_v2_last_only_condition_reaches_h3_preprocess_through_arrow(tmp_path, mo
     )
 
     assert len(cache) == 1
-    assert len(calls) == 1
+    # Image columns use one schema probe before the ordered preprocessing map.
+    assert len(calls) == 2
     workflow, values = calls[0]
     assert workflow == "fl2va"
     assert "image" not in values

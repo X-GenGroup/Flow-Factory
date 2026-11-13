@@ -112,7 +112,9 @@ class LogArguments(ArgABC):
     )
     max_logged_train_samples: int = field(
         default=30,
-        metadata={"help": "Training samples logged as media per acquisition; 0 disables them."},
+        metadata={
+            "help": "Decoded training samples logged per acquisition across all microbatches; 0 disables them."
+        },
     )
 
     def __post_init__(self):

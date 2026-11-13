@@ -86,3 +86,12 @@ remain useful evidence for the unchanged model owner, with that narrower scope.
 Exact continuation uses the recorded runtime identity and a drained acquisition or finite-data
 epoch boundary. It does not promise recovery of arbitrary in-flight reward work or continuation
 under a changed TP/CP topology. The [configuration guide](configuration.md) explains the boundary.
+
+## ReFL input-gradient training
+
+ReFL uses optimization-stage differentiable feedback across all 19 registered image,
+video and audiovisual adapters. The policy retains each model's existing parallel layouts.
+Reward and decoder components are replicated and frozen, with their input gradients enabled.
+Selected evidence includes native SD3.5 DDP continuation, FLUX.1 TP/SP/CP gradient controls,
+and eight-GPU LTX2 I2AV FSDP2 TP2/SP/CP2/DP2 joint video/audio training.
+See [ReFL](../training/refl.md) for model and reward modality coverage.

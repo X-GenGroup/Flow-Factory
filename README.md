@@ -16,7 +16,7 @@ Choose an objective and a model first, then a compatible tuning method and GPU l
 |---|---|---|
 | Model and modality | SD3.5, FLUX, Qwen Image, Z-Image, Wan, LTX-2, Bagel, SenseNova and MiniMax H3 families | [Model catalog](#-supported-models) |
 | Training paradigm | Offline demonstrations/preferences, online reward optimization, and distillation | [Feature overview](guidance/overview.md) |
-| Algorithm | 15 registered trainers, including SFT, DPO, GRPO/Guard, DPPO, NFT and multi-role distillation | [Algorithm catalog](#-supported-algorithms) |
+| Algorithm | 16 registered trainers, including SFT, DPO, GRPO/Guard, DPPO, NFT and multi-role distillation | [Algorithm catalog](#-supported-algorithms) |
 | Tuning | Full weights or LoRA, within the selected algorithm/model contract | [Algorithm guide](guidance/training/algorithms.md) |
 | Training backend | DDP, DeepSpeed ZeRO-2 and FSDP2 | [Choose a backend](guidance/overview.md#choose-a-training-backend) |
 | Parallel layout | Model-owned TP/SP and Ulysses CP, composed with FSDP2 | [4/4/8-GPU quickstart](guidance/parallelism/quickstart.md) |
@@ -155,6 +155,7 @@ acceleration:
 | Offline DPO    | offline-dpo    | [Diffusion-DPO](https://arxiv.org/abs/2311.12908) over V2 preference pairs |
 | Online DPO     | dpo            | [Diffusion-DPO](https://arxiv.org/abs/2311.12908) with generated, reward-ranked pairs |
 | GRPO           | grpo           | [Flow-GRPO](https://arxiv.org/abs/2505.05470) / [Dance-GRPO](https://arxiv.org/abs/2505.07818) |
+| ReFL           | refl           | [Image, video and AV support](guidance/training/refl.md) |
 | DiffusionART   | art            | [DiffusionART](https://arxiv.org/abs/2610.12572) · [usage](guidance/training/art.md) |
 | DiffusionNFT   | nft            | [DiffusionNFT](https://arxiv.org/abs/2509.16117) |
 | AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |

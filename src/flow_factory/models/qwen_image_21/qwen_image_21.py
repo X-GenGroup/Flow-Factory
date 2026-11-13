@@ -209,6 +209,8 @@ class QwenImage21ContextParallelLayout(ContextParallelLayout):
 class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for unified Qwen-Image 2.1 text-to-image and image editing."""
 
+    differentiable_decode_fields = ("image",)
+
     supports_diffusers_cache = False
     supports_sharded_target_materialization = True
     supports_checkpoint_slice_loading = True

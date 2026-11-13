@@ -1241,3 +1241,15 @@ def test_sensenova_evidence_requires_exact_capability_and_topology(plan, scope, 
     case["oracle"]["reward"] = "varying" if reward == "none" else "none"
     with pytest.raises(ValueError, match="numerical oracle"):
         validator.validate_plan(plan)
+
+
+@pytest.mark.parametrize("capability", ["flux-refl-cp-v1", "ltx2-refl-cp-v1"])
+def test_refl_cp_evidence_requires_declared_eight_rank_numerical_case(plan, capability):
+    case = plan["cases"][0]
+    case.update(backend="fsdp2", qa="Q2", execution_capability=capability)
+    case["topology"].update(ranks_per_node=8, dp_shard=2, tp=2, cp=2)
+    case["oracle"].update(kind="numerical", reward="varying")
+    validator.validate_plan(plan)
+    case["topology"].update(ranks_per_node=4, tp=1)
+    with pytest.raises(ValueError, match="DP2 TP2 CP2"):
+        validator.validate_plan(plan)

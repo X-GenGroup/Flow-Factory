@@ -169,6 +169,12 @@ def test_cuda_real_pickscore_input_gradient():
     ]
     ordinary = model(prompt=prompt, image=images).rewards
     torch.testing.assert_close(result, ordinary, atol=0.02, rtol=0.02)
+    video = pixels.detach().unsqueeze(1).repeat(1, 2, 1, 1, 1).requires_grad_()
+    video_scores = model.score_differentiable(prompt=prompt, video=video).rewards
+    torch.testing.assert_close(video_scores, result, atol=2e-6, rtol=2e-5)
+    video_grad = torch.autograd.grad(video_scores.sum(), video)[0]
+    torch.testing.assert_close(video_grad[:, 0], grad / 2, atol=2e-6, rtol=2e-4)
+    assert video_grad[:, 1].abs().sum() > 0
     print(
         {
             "scores": result.detach().tolist(),
@@ -208,3 +214,103 @@ def test_execution_admits_differentiable_feedback_without_advantages(monkeypatch
     values["rewards"][0]["reward_model"] = "pickscore_rank"
     with pytest.raises(ValueError, match="input gradients"):
         Arguments.from_dict(values)
+
+
+def test_input_alternatives_select_complete_joint_sets():
+    capability = RewardGradientCapability(("video", "audio"), (("video",), ("image",)))
+    assert capability.select_input_fields(("video", "audio")) == ("video", "audio")
+    assert capability.select_input_fields(("video",)) == ("video",)
+    assert capability.select_input_fields(("image",)) == ("image",)
+    assert capability.select_input_fields(("audio",)) == ()
+    assert RewardGradientCapability(("video", "audio")).select_input_fields(("video",)) == ()
+    with pytest.raises(ValueError):
+        RewardGradientCapability(("image",), (("unsupported",),))
+
+
+class VideoReward(PixelReward):
+    gradient_capability = RewardGradientCapability(("video",))
+
+    def score_differentiable(self, *, prompt, video):
+        return RewardModelOutput(rewards=video.flatten(1).mean(1))
+
+
+class AudioReward(PixelReward):
+    gradient_capability = RewardGradientCapability(("audio",))
+
+    def score_differentiable(self, *, prompt, audio):
+        return RewardModelOutput(rewards=audio.flatten(1).mean(1))
+
+
+def test_joint_decoder_dispatches_each_reward_only_its_declared_media():
+    video = torch.ones(3, 2, 3, 2, 2, dtype=torch.float64, requires_grad=True)
+    audio = torch.ones(3, 2, 4, dtype=torch.float64, requires_grad=True)
+    configs = {
+        name: RewardArguments(
+            name=name,
+            reward_model=f"{__name__}.{cls.__name__}",
+            device="cpu",
+            batch_size=2,
+            applicable_datasets=["a"],
+        )
+        for name, cls in (("video", VideoReward), ("audio", AudioReward))
+    }
+    models = {"video": VideoReward(configs["video"]), "audio": AudioReward(configs["audio"])}
+    score = DifferentiableRewardProcessor(models, configs, ("video", "audio"))
+    result = score(prompt=["a"] * 3, source_names=["a", "b", "a"], video=video, audio=audio)
+    sum((result.scores[name] * result.weights[name]).sum() for name in configs).backward()
+    assert video.grad[1].count_nonzero() == audio.grad[1].count_nonzero() == 0
+    torch.testing.assert_close(video.grad[0], torch.full_like(video[0], 1 / video[0].numel()))
+    torch.testing.assert_close(audio.grad[2], torch.full_like(audio[2], 1 / audio[2].numel()))
+
+
+def test_pickscore_video_mean_and_rgba_follow_image_scoring():
+    from flow_factory.rewards.pick_score import PickScoreRewardModel
+
+    class Model(nn.Module):
+        dtype = torch.float32
+        logit_scale = torch.tensor(0.0)
+
+        def get_text_features(self, count):
+            return torch.tensor([[0.1, 0.3, 0.6]]).expand(count, -1)
+
+        def get_image_features(self, pixel_values):
+            return pixel_values.mean((-2, -1))
+
+    class Processor:
+        image_processor = SimpleNamespace(do_resize=False, do_center_crop=False, do_normalize=False)
+
+        def __call__(self, *, text, **kwargs):
+            return {"count": torch.tensor(len(text))}
+
+    scorer = object.__new__(PickScoreRewardModel)
+    scorer.model = Model()
+    scorer.device = torch.device("cpu")
+    scorer.processor = Processor()
+    scorer.accelerator = SimpleNamespace(device=torch.device("cpu"))
+    scorer.config = RewardArguments(device="cpu")
+    pixels = torch.linspace(0.1, 0.9, 2 * 3 * 4 * 2 * 2).reshape(2, 3, 4, 2, 2).requires_grad_()
+    actual = scorer.score_differentiable(prompt=["a", "b"], video=pixels).rewards
+    expected = torch.stack(
+        [
+            scorer.score_differentiable(prompt=["a", "b"], image=frame[:, :3]).rewards
+            for frame in pixels.unbind(1)
+        ]
+    ).mean(0)
+    torch.testing.assert_close(actual, expected)
+    actual.sum().backward()
+    assert pixels.grad[:, :, :3].abs().sum() > 0
+    assert pixels.grad[:, :, 3].count_nonzero() == 0
+
+
+def test_video_objective_accepts_an_unused_detached_audio_output():
+    cfg = RewardArguments(name="video", reward_model=f"{__name__}.VideoReward", device="cpu")
+    score = DifferentiableRewardProcessor(
+        {"video": VideoReward(cfg)}, {"video": cfg}, ("video", "audio")
+    )
+    video = torch.ones(1, 2, 3, 2, 2, requires_grad=True)
+    audio = torch.zeros(1, 2, 4)
+    result = score(prompt=["a"], source_names=["a"], video=video, audio=audio)
+    result.scores["video"].sum().backward()
+    assert video.grad.abs().sum() > 0
+    with pytest.raises(ValueError, match="input gradients"):
+        score(prompt=["a"], source_names=["a"], video=video.detach(), audio=audio)

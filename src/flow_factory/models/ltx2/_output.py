@@ -30,6 +30,7 @@ import torchaudio
 from ...contracts import MediaGeometry, MediaType
 from ...samples import LatentState
 from ...utils.audio import convert_audio, require_decoded_audio_waveform
+from ...utils.base import filter_kwargs
 from ...utils.media import pixels_to_unit, unit_to_signed_unit_pixels
 from ...utils.video import (
     decoded_video_to_unit_float,
@@ -946,6 +947,21 @@ def reduce_ltx2_flow_matching_objective_values(
     """
     component_means = adapter.reduce_component_latent_values(values, state=state)
     return component_means["video"] + component_means["audio"]
+
+
+def decode_ltx2_differentiable_state(adapter: Any, state: LatentState, *, batch) -> dict:
+    """Decode both native components with rollout geometry and live gradients."""
+    kwargs = filter_kwargs(
+        adapter.decode_latents,
+        **{
+            **batch,
+            "video_latents": state.components["video"],
+            "audio_latents": state.components["audio"],
+            "output_type": "pt",
+        },
+    )
+    video, audio = adapter.decode_latents(**kwargs)
+    return {"video": video, "audio": audio}
 
 
 def decode_ltx2_output_state(

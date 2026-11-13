@@ -95,6 +95,8 @@ MAX_SINGLE_BLOCKS = 64
 
 
 class Flux2Adapter(Flux2ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin, BaseAdapter):
+
+    differentiable_decode_fields = ("image",)
     _flux2_guidance_embeds = True
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})
     pipeline_io_contract = image_output_contract(

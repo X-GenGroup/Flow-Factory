@@ -102,14 +102,12 @@ class AdvantageProcessor:
         sampler_subgroup_size: Subgroup size for the default ``GroupCoordinator``.
         group_coordinator: Coordinator to use instead of building one from
             ``sampler_type`` and ``sampler_subgroup_size``.
-        max_logged_samples: Leading samples returned as ``train_samples`` media; ``0``
-            omits the key.
 
     Note:
         After :meth:`compute_advantages` with ``'sum'`` or ``'gdpo'``, call
-        :meth:`pop_advantage_metrics` once to retrieve training metrics (including
-        ``train_samples``) for ``log_data``. Custom callables leave an empty metrics
-        snapshot. This class does not perform logging itself.
+        :meth:`pop_advantage_metrics` once to retrieve scalar training metrics for
+        ``log_data``. Custom callables leave an empty metrics snapshot.
+        This class does not perform logging itself.
     """
 
     def __init__(
@@ -123,13 +121,7 @@ class AdvantageProcessor:
         source_id_to_name: Optional[List[str]] = None,
         sampler_subgroup_size: Optional[int] = None,
         group_coordinator: Optional[GroupCoordinator] = None,
-        max_logged_samples: int = 30,
     ):
-        if type(max_logged_samples) is not int or max_logged_samples < 0:
-            raise ValueError(
-                f"expected max_logged_samples to be an int >= 0, got {max_logged_samples!r}"
-            )
-        self.max_logged_samples = max_logged_samples
         self.accelerator = accelerator
         self.reward_weights = reward_weights
         self.group_size = group_size
@@ -1116,8 +1108,6 @@ class AdvantageProcessor:
         _log_data["train/adv_max"] = adv_stats["max"]
         _log_data["train/adv_abs_mean"] = all_stats["adv_abs"]["mean"]
 
-        if self.max_logged_samples:
-            _log_data["train_samples"] = samples[: self.max_logged_samples]
         return _log_data
 
     def _build_gdpo_log_data(
@@ -1152,6 +1142,4 @@ class AdvantageProcessor:
                 "train/adv_abs_mean": all_stats["adv_abs"]["mean"],
             }
         )
-        if self.max_logged_samples:
-            _log_data["train_samples"] = samples[: self.max_logged_samples]
         return _log_data

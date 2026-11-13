@@ -21,3 +21,5 @@ checks that the model, algorithm and resource layout can work together.
 Start from a nearby [example](../examples/README.md) and use the guides to understand its choices.
 Implementation contracts and detailed numerical evidence live in the
 [developer documentation](../docs/README.md).
+
+For reward-gradient policy training, see [ReFL](training/refl.md).

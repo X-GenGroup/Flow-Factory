@@ -99,6 +99,7 @@ class Flux1Sample(T2ISample):
 class Flux1Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1)."""
 
+    differentiable_decode_fields = ("image",)
     supports_sharded_target_materialization = True
     supports_checkpoint_slice_loading = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))

@@ -114,6 +114,8 @@ class _MiniMaxH3WorkflowAdapter:
     """
 
     trajectory_component_order: ClassVar[Tuple[str, ...]] = ("video", "audio")
+    differentiable_decode_fields = ("video", "audio")
+    differentiable_decode_modules = ("vae", "audio_vae")
     flow_velocity_direction: ClassVar[Literal["data"]] = "data"
     preprocess_cache_fields: ClassVar[frozenset[str]] = _H3_PREPROCESS_CACHE_FIELDS
     preprocess_cache_version: ClassVar[str] = _H3_PREPROCESS_CACHE_VERSION
@@ -489,6 +491,15 @@ class _MiniMaxH3WorkflowAdapter:
 
     def decode_latents(self, latents: Any, **kwargs: Any) -> Any:
         return decode_h3_adapter_latents(self, latents, **kwargs)
+
+    def _decode_differentiable_state(self, state, *, batch):
+        """Keep native target-only geometry and remove decoder no-grad wrappers."""
+        from .workflow import _normalize_geometry
+
+        video, audio, _ = self.decode_latents(
+            state, geometry=_normalize_geometry(batch), output_type="pt", input_gradients=True
+        )
+        return {"video": video, "audio": audio}
 
     def empty_decoded_media(self, batch_size: int) -> Any:
         """Preserve H3's video/audio/sample-rate decode structure without decoding."""

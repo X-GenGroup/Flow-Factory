@@ -117,3 +117,27 @@ def test_whole_empty_source_round_trips_without_inventing_preprocessed_columns(
         enable_distributed=num_shards > 1,
     )
     assert len(cached) == 0 and cached.processed_dataset.features == raw_features
+
+
+def test_single_rank_image_schema_survives_map_and_cache_reload(tmp_path):
+    from PIL import Image
+
+    directory = tmp_path / "images-source"
+    directory.mkdir()
+    image = directory / "input.png"
+    Image.new("RGB", (12, 8), (20, 40, 60)).save(image)
+    (directory / "train.jsonl").write_text(
+        json.dumps({"prompt": "a bird", "images": [str(image)]}) + "\n"
+    )
+    dataset = GeneralDataset(
+        dataset_dir=str(directory),
+        cache_dir=str(tmp_path / "cache"),
+        preprocessing_batch_size=1,
+        preprocess_func=PromptLengthPreprocessor().preprocess,
+    )
+    # Both the immediate map and the merged-cache entrypoint must decode PIL.
+    assert isinstance(dataset[0]["images"][0], Image.Image)
+    dataset.processed_dataset.save_to_disk(tmp_path / "saved")
+    reloaded = GeneralDataset.load_merged(str(tmp_path / "saved"))
+    assert isinstance(reloaded[0]["images"][0], Image.Image)
+    assert reloaded[0]["images"][0].getpixel((0, 0)) == (20, 40, 60)

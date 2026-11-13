@@ -96,6 +96,7 @@ from ._output import (
     LTX2_OFFLINE_FORWARD_OVERRIDES,
     LTX2AVOutputCodec,
     LTX2FirstFrameConditionPreparer,
+    decode_ltx2_differentiable_state,
     decode_ltx2_output_state,
     reduce_ltx2_flow_matching_objective_values,
     validate_ltx2_encoded_output_geometry,
@@ -158,6 +159,9 @@ class LTX2_I2AV_Adapter(BaseAdapter):
     Shared logic with LTX2_T2AV_Adapter lives in the private ``_common`` and
     ``_output`` helpers or is duplicated.
     """
+
+    differentiable_decode_fields = ("video", "audio")
+    differentiable_decode_modules = ("vae", "audio_vae", "vocoder")
 
     supports_sharded_target_materialization = True
     supports_checkpoint_slice_loading = True
@@ -662,6 +666,9 @@ class LTX2_I2AV_Adapter(BaseAdapter):
             batch.update(image_dict)
 
         return batch
+
+    def _decode_differentiable_state(self, state, *, batch):
+        return decode_ltx2_differentiable_state(self, state, batch=batch)
 
     def decode_latents(
         self,

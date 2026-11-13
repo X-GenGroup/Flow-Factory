@@ -241,6 +241,7 @@ def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
         "sft",
         "offline-dpo",
         "art",
+        "refl",
         "grpo",
         "grpo-guard",
         "dppo",

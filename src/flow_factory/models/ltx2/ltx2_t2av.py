@@ -88,6 +88,7 @@ from ._context_parallel import (
 from ._output import (
     LTX2_OFFLINE_FORWARD_OVERRIDES,
     LTX2AVOutputCodec,
+    decode_ltx2_differentiable_state,
     decode_ltx2_output_state,
     reduce_ltx2_flow_matching_objective_values,
     validate_ltx2_encoded_output_geometry,
@@ -219,6 +220,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
     produces a per-modality log_prob. The element-weighted combination of both
     log_probs is the joint policy log_prob that drives policy gradient training.
     """
+
+    differentiable_decode_fields = ("video", "audio")
+    differentiable_decode_modules = ("vae", "audio_vae", "vocoder")
 
     supports_sharded_target_materialization = True
     supports_checkpoint_slice_loading = True
@@ -812,6 +816,9 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         return None
 
     # ============================== Decoding ==============================
+
+    def _decode_differentiable_state(self, state, *, batch):
+        return decode_ltx2_differentiable_state(self, state, batch=batch)
 
     def decode_latents(
         self,

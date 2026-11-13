@@ -191,6 +191,28 @@ class _StreamTrainer(BaseTrainer):
 @pytest.mark.parametrize("mode", ["ordered", "ready"])
 def test_three_cycles_preserve_full_rollout_boundary_and_functional_overlap(mode):
     trainer = _StreamTrainer(mode)
+    trainer.log_args.max_logged_train_samples = 1
+    trainer.logger = SimpleNamespace(close=lambda **kwargs: None)
+    original_sample = trainer.sample
+    original_log = trainer.log_data
+    media_cycles = []
+
+    def sample_with_media():
+        samples = original_sample()
+        for sample in samples:
+            sample.image = torch.ones(3, 2, 2)
+        return samples
+
+    def record(metrics, step):
+        if "train_samples" in metrics:
+            assert len(metrics["train_samples"]) == 1
+            assert metrics["train_samples"][0].extra_kwargs["rewards"]
+            media_cycles.append(trainer.epoch)
+        else:
+            original_log(metrics, step)
+
+    trainer.sample = sample_with_media
+    trainer.log_data = record
     try:
         trainer.start()
     finally:
@@ -199,6 +221,7 @@ def test_three_cycles_preserve_full_rollout_boundary_and_functional_overlap(mode
         trainer.cleanup(wait=True)
 
     assert trainer.progress == TrainingProgress(optimizer_step=9, rollout_iteration=3)
+    assert media_cycles == [0, 1, 2]
     assert trainer.parameter.item() < 1.0
     assert len(trainer.metrics) == 3
     for cycle in range(3):

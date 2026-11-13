@@ -24,7 +24,7 @@ from accelerate import DistributedDataParallelKwargs
 from accelerate.parallelism_config import ParallelismConfig
 from accelerate.utils import ProjectConfiguration
 
-from ..contracts.execution import ExecutionContract
+from ..contracts.execution import ExecutionContract, FeedbackMode
 from ..hparams import Arguments, get_training_args_class
 from ..loading.backend import configure_backend_loading
 from ..models.compute_precision import resolve_compute_precision_policy
@@ -139,13 +139,24 @@ def _requires_ddp_unused_parameter_detection(
 
     A run that trains several variants leaves some of them ungraded on any given
     backward, which DDP's static buckets cannot express. The decision has to be made
-    here because it is a constructor argument to the Accelerator.
+    here because it is a constructor argument to the Accelerator. Differentiable
+    feedback can also leave unscored modality heads without a gradient.
     """
     training_args_cls = get_training_args_class(config.training_args.trainer_type)
     required_roles = getattr(config.training_args, "required_trainable_roles", None)
     if required_roles is None:
         required_roles = getattr(training_args_cls, "required_trainable_roles", ())
-    return len(tuple(required_roles)) > 1 or adapter_cls.ddp_find_unused_parameters
+    contract = getattr(training_args_cls, "execution_contract", None)
+    partial_media_objective = (
+        isinstance(contract, ExecutionContract)
+        and contract.feedback is FeedbackMode.DIFFERENTIABLE_REWARD
+        and len(adapter_cls.differentiable_decode_fields) > 1
+    )
+    return (
+        len(tuple(required_roles)) > 1
+        or adapter_cls.ddp_find_unused_parameters
+        or partial_media_objective
+    )
 
 
 def _build_parallelism_config(config: Arguments) -> Optional[ParallelismConfig]:

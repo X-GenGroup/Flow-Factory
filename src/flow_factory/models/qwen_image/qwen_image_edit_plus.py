@@ -193,6 +193,8 @@ class _QwenImageEditOutputStateCodec:
 class QwenImageEditPlusAdapter(BaseAdapter):
     """Adapter for Qwen-Image-Edit Plus image editing models."""
 
+    differentiable_decode_fields = ("image",)
+
     supports_sharded_target_materialization = True
     supports_checkpoint_slice_loading = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))
@@ -1404,6 +1406,8 @@ class QwenImageEditPlusAdapter(BaseAdapter):
         log_prob_index_map = log_prob_collector.get_index_map() if compute_log_prob else None
         samples = [
             QwenImageEditPlusSample(
+                height=height,
+                width=width,
                 # Denoising trajectory
                 timesteps=timesteps,
                 all_latents=(

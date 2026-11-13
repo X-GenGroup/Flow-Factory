@@ -336,13 +336,6 @@ def test_trainer_cleanup_closes_the_logger(wait):
     assert calls == [wait]
 
 
-def test_logged_train_sample_count_is_validated():
-    from flow_factory.advantage.advantage_processor import AdvantageProcessor
-
-    with pytest.raises(ValueError, match="max_logged_samples"):
-        AdvantageProcessor(accelerator=None, reward_weights={}, group_size=2, max_logged_samples=-1)
-
-
 @pytest.mark.parametrize(
     "values",
     [

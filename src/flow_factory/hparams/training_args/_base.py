@@ -148,6 +148,10 @@ class TrainingArguments(ArgABC):
     reward_gradient_fields: ClassVar[tuple[str, ...]] = ()
     sampler_selection_contract: ClassVar[SamplerSelectionContract] = FLEXIBLE_SAMPLER_SELECTION
 
+    def get_reward_gradient_fields(self, args) -> tuple[str, ...]:
+        """Return media available to the algorithm's differentiable feedback."""
+        return self.reward_gradient_fields
+
     def get_sampler_selection_contract(self) -> SamplerSelectionContract:
         """Return the algorithm's sampler requirement for this configuration."""
 

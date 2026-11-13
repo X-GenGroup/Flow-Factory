@@ -100,6 +100,8 @@ class QwenImageSample(T2ISample):
 class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
 
+    differentiable_decode_fields = ("image",)
+
     supports_sharded_target_materialization = True
     supports_checkpoint_slice_loading = True
     tensor_parallel_head_config = ("transformer", ("num_attention_heads",))

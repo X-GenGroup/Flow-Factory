@@ -1447,6 +1447,9 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "refl-sd35-ddp",
+                "refl-flux-tp-cp",
+                "refl-real-pickscore-cuda",
                 "scheduler-replay-flux-native",
                 "art-av-stream-native",
                 "art-flux-ddp-native",
@@ -2019,6 +2022,9 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_sft_fixture.py",
             {
+                "refl-sd35-ddp",
+                "refl-flux-tp-cp",
+                "refl-real-pickscore-cuda",
                 "scheduler-replay-flux-native",
                 "art-flux-ddp-native",
                 "native-attention-runtime",
@@ -2120,6 +2126,32 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
     ],
 )
 def test_flux_leaf_artifact_changes_select_genuine_consumers(path, expected):
+    refl_consumers = {
+        "flux_sft_fixture.py": {
+            "refl-native-sd3-5",
+            "refl-native-flux1",
+            "refl-native-flux1-kontext",
+            "refl-native-flux2",
+            "refl-native-flux2-klein",
+            "refl-native-flux3",
+            "refl-native-z-image",
+        },
+        "qwen_cp_fixture.py": {
+            "refl-native-qwen-image",
+            "refl-native-qwen-image-edit-plus",
+            "refl-native-qwen-image-2-1",
+            "refl-native-bagel",
+            "refl-native-sensenova",
+        },
+        "qwen_coupled_fixture.py": {
+            "refl-native-qwen-image",
+            "refl-native-qwen-image-edit-plus",
+            "refl-native-qwen-image-2-1",
+            "refl-native-bagel",
+            "refl-native-sensenova",
+        },
+    }
+    expected = expected | refl_consumers.get(path, set())
     path = "tests/distributed/" + path
     scope = {
         "paths": [path],
@@ -4512,3 +4544,89 @@ def test_differentiable_reward_admission_selects_focused_contracts():
     assert "execution.contracts" in text
     assert "review.owner:" not in text
     assert "overlap.loop" not in text
+
+
+def test_refl_decoder_declarations_select_derivatives_without_reopening_model_plans():
+    """Explicit decoder declarations retain native derivative and lifecycle witnesses."""
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    semantic = {
+        "src/flow_factory/models/abc.py": [
+            "BaseAdapter.differentiable_decode_fields",
+            "BaseAdapter.decode_differentiable_state",
+        ],
+        "src/flow_factory/models/flux/flux1.py": ["Flux1Adapter.differentiable_decode_fields"],
+        "src/flow_factory/models/stable_diffusion/sd3_5.py": [
+            "SD3_5Adapter.differentiable_decode_fields"
+        ],
+    }
+    scope = {
+        "paths": list(semantic),
+        "semantic_symbols": semantic,
+        "scope_complete": True,
+        "facets": [],
+        "uninspected": [],
+    }
+    required = planner.infer_requirements(scope, policy, semantic)
+    text = str(required)
+    assert all(
+        key in text
+        for key in [
+            "algorithm.refl.contracts",
+            "algorithm.refl.ddp",
+            "algorithm.refl.tp_cp",
+            "algorithm.refl.real_reward",
+        ]
+    )
+    assert "review.owner:" not in text
+    assert "parallel.tp_parity" not in text
+
+
+def test_refl_model_decode_routes_keep_each_model_and_prepared_joint_witness():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    semantic = {
+        "src/flow_factory/models/abc.py": ["BaseAdapter._decode_differentiable_state"],
+        "src/flow_factory/models/ltx2/_output.py": ["decode_ltx2_differentiable_state"],
+        "src/flow_factory/models/minimax_h3/blocks.py": ["run_h3_blocks"],
+    }
+    scope = {
+        "paths": list(semantic),
+        "semantic_symbols": semantic,
+        "scope_complete": True,
+        "facets": [],
+        "uninspected": [],
+    }
+    requirements = planner.infer_requirements(scope, policy, semantic)
+    obligations = requirements["obligations"]
+    assert "algorithm.refl.joint_tp_cp" in obligations
+    models = [key for key in obligations if key.startswith("algorithm.refl.model.")]
+    assert len(models) == 19
+    assert not any(key.startswith("review.") for key in obligations)
+    # A denoiser/parallel-plan edit must still select its original family contract.
+    semantic = {"src/flow_factory/models/flux/flux2.py": ["Flux2Adapter._forward"]}
+    scope.update(paths=list(semantic), semantic_symbols=semantic)
+    requirements = planner.infer_requirements(scope, policy, semantic)
+    assert "model.flux2.cp_reference" in requirements["obligations"]
+
+
+def test_refl_prepared_forward_routes_keep_unused_heads_and_conditional_shards():
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+    semantic = {
+        "src/flow_factory/models/model_bundle.py": ["composed_forward"],
+        "src/flow_factory/trainers/loader.py": ["_requires_ddp_unused_parameter_detection"],
+        "src/flow_factory/trainers/rl/refl.py": ["ReFLTrainer._select_replay_step"],
+    }
+    scope = {
+        "paths": list(semantic),
+        "semantic_symbols": semantic,
+        "scope_complete": True,
+        "facets": [],
+        "uninspected": [],
+    }
+    obligations = planner.infer_requirements(scope, policy, semantic)["obligations"]
+    assert {
+        "parallel.composed_forward.contracts",
+        "algorithm.refl.video_ddp.ltx2",
+        "algorithm.refl.video_ddp.h3",
+        "algorithm.refl.wan_dual_fsdp",
+    } <= set(obligations)
+    assert not any(key.startswith("review.") for key in obligations)

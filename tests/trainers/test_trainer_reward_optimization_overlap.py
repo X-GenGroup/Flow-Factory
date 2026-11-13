@@ -196,6 +196,7 @@ def test_overlap_rejects_a_reward_client_on_the_training_gpu() -> None:
 
 
 class _GenerationTimingHarness:
+    log_train_samples = BaseTrainer.log_train_samples
     execution_contract = ONLINE_EXECUTION_CONTRACT
 
     def __init__(self) -> None:
@@ -344,6 +345,7 @@ def test_group_local_gdpo_optimizes_each_ready_tile() -> None:
             events.append("abort")
 
     class Harness:
+        log_train_samples = BaseTrainer.log_train_samples
         training_args = SimpleNamespace(
             advantage_aggregation="gdpo",
             global_std=False,
