@@ -2139,14 +2139,14 @@ def test_flux_leaf_artifact_changes_select_genuine_consumers(path, expected):
         "qwen_cp_fixture.py": {
             "refl-native-qwen-image",
             "refl-native-qwen-image-edit-plus",
-            "refl-native-qwen-image-2.1",
+            "refl-native-qwen-image-2-1",
             "refl-native-bagel",
             "refl-native-sensenova",
         },
         "qwen_coupled_fixture.py": {
             "refl-native-qwen-image",
             "refl-native-qwen-image-edit-plus",
-            "refl-native-qwen-image-2.1",
+            "refl-native-qwen-image-2-1",
             "refl-native-bagel",
             "refl-native-sensenova",
         },

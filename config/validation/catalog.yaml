@@ -16619,7 +16619,7 @@ cases:
   fixture: Native small sd3-5 policy, frozen decoder and analytic differentiable media scorer; two complete
     acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -16677,7 +16677,7 @@ cases:
   fixture: Native small flux1 policy, frozen decoder and analytic differentiable media scorer; two complete
     acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -16733,7 +16733,7 @@ cases:
   fixture: Native small flux1-kontext policy, frozen decoder and analytic differentiable media scorer;
     two complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -16792,7 +16792,7 @@ cases:
   fixture: Native small flux2 policy, frozen decoder and analytic differentiable media scorer; two complete
     acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -16851,7 +16851,7 @@ cases:
   fixture: Native small flux2-klein policy, frozen decoder and analytic differentiable media scorer; two
     complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -16910,7 +16910,7 @@ cases:
   fixture: Native small flux3 policy, frozen decoder and analytic differentiable media scorer; two complete
     acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -16969,7 +16969,7 @@ cases:
   fixture: Native small qwen-image policy, frozen decoder and analytic differentiable media scorer; two
     complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17025,7 +17025,7 @@ cases:
   fixture: Native small qwen-image-edit-plus policy, frozen decoder and analytic differentiable media
     scorer; two complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17071,7 +17071,7 @@ cases:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
     model_paths: []
-- id: refl-native-qwen-image-2.1
+- id: refl-native-qwen-image-2-1
   covers:
   - algorithm.refl.model.qwen_image_2.1
   facets:
@@ -17083,7 +17083,7 @@ cases:
   fixture: Native small qwen-image-2.1 policy, frozen decoder and analytic differentiable media scorer;
     two complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17141,7 +17141,7 @@ cases:
   fixture: Native small z-image policy, frozen decoder and analytic differentiable media scorer; two complete
     acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17199,7 +17199,7 @@ cases:
   fixture: Native small wan2_t2v policy, frozen decoder and analytic differentiable media scorer; two
     complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17255,7 +17255,7 @@ cases:
   fixture: Native small wan2_i2v policy, frozen decoder and analytic differentiable media scorer; two
     complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17314,7 +17314,7 @@ cases:
   fixture: Native small bagel policy, frozen decoder and analytic differentiable media scorer; two complete
     acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17373,7 +17373,7 @@ cases:
   fixture: Native small sensenova policy, frozen decoder and analytic differentiable media scorer; two
     complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17432,7 +17432,7 @@ cases:
   fixture: Native small ltx2_t2av policy, frozen decoder and analytic differentiable media scorer; two
     complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17489,7 +17489,7 @@ cases:
   fixture: Native small ltx2_i2av policy, frozen decoder and analytic differentiable media scorer; two
     complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17546,7 +17546,7 @@ cases:
   fixture: Native small minimax-h3-t2va policy, frozen decoder and analytic differentiable media scorer;
     two complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17602,7 +17602,7 @@ cases:
   fixture: Native small minimax-h3-fl2va policy, frozen decoder and analytic differentiable media scorer;
     two complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
@@ -17659,7 +17659,7 @@ cases:
   fixture: Native small minimax-h3-ref2va policy, frozen decoder and analytic differentiable media scorer;
     two complete acquisition/update cycles.
   fixture_kind: model_structure
-  qa: Q2
+  qa: Q1
   backend: cuda
   topology:
     nodes: 1
