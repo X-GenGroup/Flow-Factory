@@ -358,7 +358,8 @@ def test_input_media_replacement_invalidates_the_condition_cache(tmp_path: Path)
         preprocessing_batch_size=1,
     )
 
-    assert preprocessor.calls == 2
+    # Each changed image source needs one schema probe and one ordered map.
+    assert preprocessor.calls == 4
     assert second_cache[0][OFFLINE_CONDITION_ID_COLUMN] != first_condition_id
     assert second_cache._fingerprint != first_cache._fingerprint
     assert second_cache.cache_files != first_cache.cache_files
@@ -664,11 +665,15 @@ def test_grouped_projection_preserves_per_modality_order_and_rate_overrides(
         (255, 0, 0),
         (0, 255, 0),
     ]
-    assert video_calls == [
-        (str(tmp_path / "first.mp4"), 12.5),
-        (str(tmp_path / "second.mp4"), None),
-    ]
-    assert audio_calls == [(str(tmp_path / "voice.wav"), 16000)]
+    assert (
+        video_calls
+        == [
+            (str(tmp_path / "first.mp4"), 12.5),
+            (str(tmp_path / "second.mp4"), None),
+        ]
+        * 2
+    )
+    assert audio_calls == [(str(tmp_path / "voice.wav"), 16000)] * 2
     assert len(preprocessor.videos[0]) == 2
     assert len(preprocessor.audios[0]) == 1
 
@@ -848,7 +853,8 @@ def test_standalone_condition_cache_honors_single_sample_contract(
         preprocessing_batch_size=8,
     )
 
-    assert preprocessor.batch_sizes == [1, 1]
+    # The representative schema probe and both map calls keep the B=1 contract.
+    assert preprocessor.batch_sizes == [1, 1, 1]
 
 
 def test_ordered_heterogeneous_references_cross_arrow_as_canonical_json(
