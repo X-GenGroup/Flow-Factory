@@ -133,22 +133,48 @@ def validate_flow_match_coordinates(
             f"expected {identifier} devices to match, received "
             f"t_scheduler={t_scheduler.device} and sigma={sigma.device}"
         )
-    valid = (
-        torch.isfinite(t_scheduler)
-        & torch.isfinite(sigma)
-        & (t_scheduler >= 0)
-        & (t_scheduler <= TIMESTEP_MAX)
-        & (sigma >= 0)
-        & (sigma <= 1)
-    )
-    if not bool(valid.all()):
+    # One aminmax per tensor replaces four comparison passes. NaN propagates
+    # through aminmax and fails every closed range check, as does +/-inf, so
+    # finiteness needs no separate pass. Empty tensors are vacuously valid.
+    valid = True
+    if t_scheduler.numel():
+        t_lo, t_hi = t_scheduler.aminmax()
+        sigma_lo, sigma_hi = sigma.aminmax()
+        if t_scheduler.device.type == "cpu":
+            valid = (
+                float(t_lo) >= 0
+                and float(t_hi) <= TIMESTEP_MAX
+                and float(sigma_lo) >= 0
+                and float(sigma_hi) <= 1
+            )
+        else:
+            # Combine on device so accelerators synchronize once, not per bound.
+            valid = bool(
+                (t_lo >= 0) & (t_hi <= TIMESTEP_MAX) & (sigma_lo >= 0) & (sigma_hi <= 1)
+            )
+    if not valid:
         raise ValueError(
             f"expected {identifier} timestep and sigma finite with timestep in "
             f"[0, {TIMESTEP_MAX:g}] and sigma in [0, 1], received "
             f"timestep={t_scheduler.tolist()} and sigma={sigma.tolist()}"
         )
 
-    expected_sigma = _flow_match_sigma_unchecked(t_scheduler)
+    # Widening to float64 is exact for every floating dtype.
+    t_float64 = t_scheduler.to(torch.float64)
+    # Same as _flow_match_sigma_unchecked; the clamp is a no-op for validated timesteps.
+    output_dtype = (
+        t_scheduler.dtype if t_scheduler.is_floating_point() else torch.get_default_dtype()
+    )
+    expected_sigma = (t_float64 / TIMESTEP_MAX).to(output_dtype)
+    # Exactly equal coordinates have zero difference, which is always within the
+    # non-negative ULP tolerance; dtype promotion in ``==`` is exact. Same-dtype
+    # pairs use the single fused ``torch.equal`` (NaN was already rejected).
+    if expected_sigma.dtype == sigma.dtype:
+        exact = torch.equal(expected_sigma, sigma)
+    else:
+        exact = bool((expected_sigma == sigma).all())
+    if exact:
+        return
     if not within_one_native_ulp(expected_sigma, sigma):
         raise ValueError(
             f"expected {identifier} timestep == sigma * {TIMESTEP_MAX:g} within one native "
