@@ -145,6 +145,7 @@ class TrainingArguments(ArgABC):
     r"""Base training arguments shared across all algorithms."""
 
     execution_contract: ClassVar[ExecutionContract] = ONLINE_EXECUTION_CONTRACT
+    reward_gradient_fields: ClassVar[tuple[str, ...]] = ()
     sampler_selection_contract: ClassVar[SamplerSelectionContract] = FLEXIBLE_SAMPLER_SELECTION
 
     def get_sampler_selection_contract(self) -> SamplerSelectionContract:

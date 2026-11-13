@@ -1064,6 +1064,13 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         self.reward_models = self.reward_loader.get_training_reward_models()
         self.eval_reward_models = self.reward_loader.get_eval_reward_models()
         train_reward_configs = self.reward_loader.get_reward_configs("train")
+        self.differentiable_feedback = None
+        if type(self).execution_contract.feedback is FeedbackMode.DIFFERENTIABLE_REWARD:
+            from ..rewards.differentiable import DifferentiableRewardProcessor
+
+            self.differentiable_feedback = DifferentiableRewardProcessor(
+                self.reward_models, train_reward_configs, self.training_args.reward_gradient_fields
+            )
         self.reward_processor: Optional[RewardProcessor] = None
         self.reward_buffer: Optional[RewardBuffer] = None
         self.advantage_processor: Optional[AdvantageProcessor] = None

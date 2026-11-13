@@ -9,6 +9,18 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/contracts/__init__.py]
+    symbols: ['<module>']
+    requires: [execution.contracts, feedback.differentiable.contracts]
+    reason: Public execution contract exports retain registry and derivative admission controls.
+  - paths: [src/flow_factory/contracts/reward.py, src/flow_factory/rewards/abc.py,
+            src/flow_factory/rewards/differentiable.py, src/flow_factory/rewards/tensor_preprocessing.py,
+            tests/rewards/test_differentiable_reward.py]
+    requires: [feedback.differentiable.contracts]
+    reason: Model declarations and synchronous input-gradient scoring need gradient, applicability and detached-path controls.
+  - paths: [src/flow_factory/rewards/pick_score.py]
+    requires: [feedback.differentiable.contracts, feedback.differentiable.pickscore]
+    reason: Tensor preprocessing must preserve real pretrained scorer input derivatives and ordinary PIL score parity.
   - paths: [src/flow_factory/contracts/replay.py, src/flow_factory/hparams/scheduler_args.py]
     requires: [scheduler.replay.contracts, scheduler.replay.coupled]
     reason: Actual transition selection owns retention and loss count, independently of noise and endpoint re-noising.
@@ -1372,6 +1384,18 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths: [src/flow_factory/trainers/abc.py]
+    symbols: [BaseTrainer._init_reward_model]
+    requires: [execution.contracts, feedback.differentiable.contracts]
+    reason: Additive feedback-mode initialization is gated by an immutable contract; ordinary acquisition and asynchronous workers are unchanged.
+  - paths: [src/flow_factory/hparams/args.py]
+    symbols: [Arguments._validate_training_feedback_contract, Arguments._validate_every_source_has_a_reward]
+    requires: [execution.contracts, feedback.differentiable.contracts]
+    reason: Model-owned derivative admission and source coverage are checked before loading; grouped runtime feedback retains existing controls.
+  - paths: [src/flow_factory/hparams/training_args/_base.py]
+    symbols: [TrainingArguments.reward_gradient_fields]
+    requires: [execution.contracts, feedback.differentiable.contracts, scheduler.replay.contracts]
+    reason: Class-level derivative fields add no optimizer geometry; registry and replay-count controls guard the shared argument owner.
   - paths: [src/flow_factory/trainers/rl/grpo.py]
     symbols: [GRPOTrainer.__init__, GRPOTrainer.training_args]
     requires: [execution.contracts, scheduler.replay.contracts, scheduler.replay.coupled]

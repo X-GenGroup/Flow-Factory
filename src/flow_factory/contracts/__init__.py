@@ -15,6 +15,7 @@
 """Dependency-neutral framework contracts."""
 
 from .execution import (
+    DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT,
     OFFLINE_EXECUTION_CONTRACT,
     ONLINE_EXECUTION_CONTRACT,
     ONLINE_NO_FEEDBACK_EXECUTION_CONTRACT,
@@ -102,6 +103,7 @@ from .sampler import (
 )
 
 __all__ = [
+    "DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT",
     "AcquisitionMode",
     "BatchCapability",
     "COUPLED_REWARD_OPTIMIZATION_OVERLAP",

@@ -293,6 +293,12 @@ class Arguments(ArgABC):
 
     def _validate_training_feedback_contract(self) -> None:
         """Reject runtime training rewards when the algorithm declares no feedback."""
+        if self._get_execution_contract().feedback is FeedbackMode.DIFFERENTIABLE_REWARD:
+            from ..rewards.differentiable import validate_differentiable_rewards
+
+            validate_differentiable_rewards(
+                self.reward_args, self.training_args.reward_gradient_fields
+            )
         if self._get_execution_contract().feedback is FeedbackMode.NONE and self.reward_args:
             raise ValueError(
                 f"trainer_type={self.training_args.trainer_type!r} does not accept training "
@@ -659,7 +665,7 @@ class Arguments(ArgABC):
                     f"or drop the dataset entry from `data.datasets`."
                 )
 
-        if self._get_execution_contract().feedback is FeedbackMode.RUNTIME_REWARD:
+        if self._get_execution_contract().feedback is not FeedbackMode.NONE:
             _check_side(self.reward_args, train_names, side="Training")
         _check_side(self.eval_reward_args, eval_names, side="Eval")
 

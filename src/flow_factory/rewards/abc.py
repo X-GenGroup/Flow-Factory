@@ -29,6 +29,7 @@ from accelerate import Accelerator
 from diffusers.utils.outputs import BaseOutput
 from PIL import Image
 
+from ..contracts.reward import RewardGradientCapability
 from ..hparams import RewardArguments
 
 
@@ -42,6 +43,16 @@ class RewardModelOutput(BaseOutput):
 
 class BaseRewardModel(ABC):
     """Abstract base class providing the common interface for all reward models."""
+
+    gradient_capability: RewardGradientCapability | None = None
+
+    def score_differentiable(self, **kwargs: Any) -> RewardModelOutput:
+        """Score tensor inputs while retaining their autograd connection.
+
+        Implementations declare supported inputs through ``gradient_capability``.
+        Scorer parameters are frozen by the differentiable feedback owner.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support input gradients")
 
     # Fields required from `BaseSample` for reward computation
     required_fields: Tuple[str, ...] = ()
