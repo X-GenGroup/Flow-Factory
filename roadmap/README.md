@@ -1,6 +1,7 @@
 # Flow-Factory roadmap
 
-Latest reviewed baseline: main `e3f8e06d` (2026-11-12), including ART/shared replay #377, reference MSE #379 and async media logging #380.
+Latest reviewed baseline: main `49f4b272`, including ART/shared replay #377, reference MSE #379,
+async media logging #380, differentiable reward #381 and ReFL #382.
 P01–P14 are merged and [v0.5.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0).
 The historical v0.5.0 19-model / 14-trainer TP/SP/Ulysses-CP inventory, SP completion, shared parallelism owners,
 P12j sharded loading and P13a evidence continuity remain the implemented foundation. Historical
@@ -8,15 +9,15 @@ P12j sharded loading and P13a evidence continuity remain the implemented foundat
 [SP](handoffs/v0.5-sp-completion.md) handoffs retain original evidence identities, not current tasks.
 
 P15a user documentation merged in #376. [P18 DiffusionART](milestones/v0.5x-v0.6.md#p18)
-merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377), bringing the current registry
-to 15 trainers; its supported compositions and evidence are recorded in the
-[ART guide](../guidance/training/art.md), not inferred from the historical matrix. The next
-development work is the P19a/P19b stack for [differentiable rewards and ReFL](milestones/v0.5x-v0.6.md#p19).
-After review and merge, [P20a](milestones/v0.5x-v0.6.md#p20a) is the next implementation entry.
-ART experiment follow-through and v0.5.x publication remain separate from that dependency.
-[P19–P21](milestones/v0.5x-v0.6.md#p19) deliver ReFL,
-differentiable rewards, component execution policies and DRTune for v0.6. Backend expansion
-waits: P15b–P15f target NCCL EP in v0.7; P16 targets optional DeepEP in v0.8. P17 remains the
+merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377). Its supported compositions
+and evidence are recorded in the
+[ART guide](../guidance/training/art.md). [P19](milestones/v0.5x-v0.6.md#p19) merged in #381 and
+#382, bringing the registry to 16 trainers. [P20a](milestones/v0.5x-v0.6.md#p20a) is the next
+implementation entry. ART experiment follow-through and v0.5.x publication can proceed independently.
+v0.6 combines ReFL and differentiable rewards with
+[component execution policies](milestones/v0.5x-v0.6.md#p20) and
+[DRaFT-K](milestones/v0.5x-v0.6.md#p21). P15b–P15f target NCCL EP in v0.7, and P16 targets
+optional DeepEP in v0.8. P17 remains the
 v1.0 stabilization boundary. See the [derivative/placement design](design/differentiable-rewards.md).
 
 Use independent worktrees and native Stack PRs when work is dependent; the user reviews and merges.
@@ -73,7 +74,7 @@ was never published as tags and is superseded by this sequence; preserve the act
 | [v0.5.0](milestones/v0.5.md#p14) | P14 | Qualified TP/CP/TP+CP model-algorithm coverage, eval, overlap and state continuation |
 | `v0.5.1` | Torch 2.10/2.11 compatibility after #374 | Published source-only patch tag; no Release or image |
 | [v0.5.x](milestones/v0.5x-v0.6.md#p18) | P18 | DiffusionART with bounded sampler/trajectory semantics |
-| [v0.6.0](milestones/v0.5x-v0.6.md#p19) | P19-P21 | ReFL/DRTune, differentiable rewards and component distribution |
+| [v0.6.0](milestones/v0.5x-v0.6.md#p19) | P19-P21 | ReFL and DRaFT-K, differentiable rewards and component distribution |
 | [v0.7.0](milestones/v0.6-v0.7.md#p15) | P15 | One real MoE model with a correct NCCL EP implementation |
 | [v0.8.0](milestones/v0.6-v0.7.md#p16) | P16 | Optional DeepEP transport with a validated NCCL fallback |
 | [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 and P18-P21 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
@@ -124,11 +125,9 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| Differentiable reward | [P19a](milestones/v0.5x-v0.6.md#p19a): typed input-gradient contract and one frozen scorer | Next development entry; P18 implementation is merged |
-| ReFL | [P19b](milestones/v0.5x-v0.6.md#p19b): replicated derivative reference | P19a before component sharding |
-| ART experiment and publication | [P18 follow-through](milestones/v0.5x-v0.6.md#p18): record final experiment outcomes and review release identity | Preserve original evidence; does not block P19a |
-| Component distribution | [P20](milestones/v0.5x-v0.6.md#p20) | Reuse runtime/loading owners; replicated reference first |
-| DRTune | [P21](milestones/v0.5x-v0.6.md#p21) | Exact selected-step derivative program before optional VJP optimization |
+| Component distribution | [P20a](milestones/v0.5x-v0.6.md#p20a): resolve the auxiliary execution policy | Next implementation entry; reuse the merged P19 replicated reference |
+| ART experiment and publication | [P18 follow-through](milestones/v0.5x-v0.6.md#p18): record final experiment outcomes and review release identity | Independent of component execution |
+| DRaFT | [P21a](milestones/v0.5x-v0.6.md#p21a): differentiate the contiguous Euler ODE suffix | Reuse P19 differentiable feedback and P20b component execution |
 | Deferred EP model admission | [P15b](milestones/v0.6-v0.7.md#p15b): pin DiT-MoE semantics and upstream reference | Resolve conditioning, auxiliary objective and expert ownership before EP runtime |
 | NCCL EP integration | [P15c–P15f](milestones/v0.6-v0.7.md#p15c) | EP=1 reference, dispatch, FSDP/state, then online/offline integration |
 | Optional DeepEP | [P16a](milestones/v0.6-v0.7.md#p16a): qualify a hardware/toolchain/API tuple | NCCL reference stays supported; no mid-collective fallback |

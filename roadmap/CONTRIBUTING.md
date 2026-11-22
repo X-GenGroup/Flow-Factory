@@ -18,9 +18,11 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-The next development entry is [P19a differentiable feedback](milestones/v0.5x-v0.6.md#p19a),
-followed by ReFL, component execution policies and DRTune. P15a and P18 ART are merged;
-[P18 experiment/publication follow-through](milestones/v0.5x-v0.6.md#p18) is separate.
+The next development entry is [P20a component execution policy](milestones/v0.5x-v0.6.md#p20a).
+[P19 differentiable feedback and ReFL](milestones/v0.5x-v0.6.md#p19) are merged and provide the
+reference for component sharding and [P21 DRaFT-K](milestones/v0.5x-v0.6.md#p21).
+P15a and P18 ART are merged. [P18 experiment/publication follow-through](milestones/v0.5x-v0.6.md#p18)
+can proceed independently.
 [P15b EP model admission](milestones/v0.6-v0.7.md#p15b) remains deferred until P21 qualification.
 P01–P14 are complete and v0.5.0 is published. Start from latest main; historical P11/P12 handoffs
 retain evidence, not an instruction to rerun or reopen their completed stacks. A concrete new

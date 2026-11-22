@@ -1,10 +1,11 @@
 # Differentiable feedback and component execution
 
-Design checkpoint for [P18–P21](../milestones/v0.5x-v0.6.md), reviewed 2026-11-11.
-ART merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377) as an additive v0.5.x
-feature on the existing reward-regression path. ReFL/DRTune and flexible component
-placement follow for v0.6, before [NCCL EP](expert-parallelism.md). This is a design, not an
-implemented differentiable reward/backend API.
+Design checkpoint for [P18–P21](../milestones/v0.5x-v0.6.md).
+ART merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377) on the existing
+reward-regression path. Differentiable rewards and ReFL merged in
+[#381](https://github.com/X-GenGroup/Flow-Factory/pull/381) and
+[#382](https://github.com/X-GenGroup/Flow-Factory/pull/382). Flexible component placement and
+DRaFT-K complete the planned v0.6 scope before [NCCL EP](expert-parallelism.md).
 
 ## Separate three decisions
 
@@ -21,10 +22,10 @@ as a single `backend` string or introduce separate trainers for each distributio
 
 ## Execution and feedback
 
-The current reward buffer detaches outputs and permits asynchronous scoring. That is appropriate
-for ART/GRPO, but it cannot transport the autograd graph needed by ReFL/DRTune. Add an explicit
-differentiable feedback capability and optimization-stage boundary, then audit all resolved
-execution contracts. Preserve ordinary reward evaluation and evaluation-only scorers.
+The ordinary reward buffer detaches scores for asynchronous paths such as ART and GRPO.
+ReFL uses the merged differentiable reward capability and a synchronous optimization-stage
+feedback path. DRaFT can reuse that path to score its decoded terminal state and backpropagate
+through the sampler.
 
 A scorer's differentiable path accepts tensors and exposes its direction, reduction and precision.
 Keep resize/crop/normalization in Torch; PIL, NumPy, remote calls and accidental detach are not
@@ -43,11 +44,11 @@ The [shared sampling contract](../../guidance/training/sampling.md) from #377 al
 admission runs after scheduler/sampler resolution even with explicit gradient accumulation.
 Reuse these owners instead of introducing algorithm-specific copies of replay selection.
 
-Retention selects which rollout states/transitions are saved; it does not choose an autograd
-graph, a stop-gradient boundary or a differentiable solver update. ReFL/DRTune must declare
-those derivative semantics separately in their execution contract. Terminal-state re-noising
-for NFT/AWM/DGPO/CRD likewise continues to use the existing `TimeSampler` controls rather than
-being reinterpreted as recorded-transition replay.
+Retention selects which rollout states or transitions are saved. The trainer owns the derivative
+boundary. DRaFT-K needs the state at the entrance to the last `K` transitions and the corresponding
+schedule and conditioning. Each suffix transition consumes the previous transition's newly computed
+state. Terminal-state re-noising for NFT/AWM/DGPO/CRD continues to use the existing
+`TimeSampler` controls.
 
 ## Distribution ownership
 
@@ -83,14 +84,27 @@ not algorithm admission restrictions. Ordinary training may configure updates, i
 shared reward reduction. Overlap retains the common one-inner-epoch and group-local-statistics
 requirements, preserving complete-group readiness and frozen rollout anchors.
 
-ReFL first establishes a no-grad sampling prefix followed by a selected differentiable prediction,
-clean estimate, decode and reward loss. Record how the flow-matching adaptation differs from the
-original diffusion implementation, including its optional pretraining regularizer.
+ReFL replays one selected late transition and decodes its projected clean estimate. The landed
+[ReFL guide](../../guidance/training/refl.md) describes this flow-matching adaptation.
 
-DRTune owns a more specific derivative program. Stopping the denoiser input gradient does not
-remove the direct state branch of the scheduler update. Selected steps, early stopping and solver
-history must be explicit and tested against an independent unrolled reference. Begin with Euler;
-solver-agnostic admission would hide an unproved contract.
+[DRaFT-K](https://arxiv.org/html/2309.17400#S4) evaluates the final generated state. Run the first
+`T - K` transitions without gradients, then differentiate through the last `K` contiguous
+transitions. The state within that suffix retains gradients through both the denoiser input and
+the solver update. With `K = T`, the same loop represents full-chain DRaFT. Start with Euler ODE
+as the flow-matching adaptation and use the model's normal conditioning, guidance, state masks,
+and per-step precision. The paper's image experiments used DDIM.
+
+Reuse the adapter's typed state forward and native differentiable decoder, the scheduler's step
+math, and the P19 scorer. Use one policy version for the no-grad prefix and differentiated suffix
+in the reference objective. Where acquisition and optimization are separate, retain the
+suffix entry state and its policy identity through the existing trajectory owner. The Euler
+step can accept a recorded next state for replay. For the suffix, request a
+fresh ODE update and feed its output to the next step so the final reward reaches earlier policy
+calls. Keep the complete suffix and backward within the prepared model's supported lifecycle.
+
+DRaFT-LV is a follow-up estimator. It draws additional noises from the forward process at the
+last-step noise level of a generated endpoint and combines the resulting reward gradients.
+Its noise, reward reduction and gradient weighting need their own reference checks.
 
 ## State, failures and validation
 
