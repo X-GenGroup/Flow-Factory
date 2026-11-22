@@ -9,6 +9,14 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/hparams/args.py]
+    symbols: [Arguments.component_execution_args, Arguments.from_dict]
+    requires: [components.execution_policy]
+    reason: The optional component policy must parse through the training YAML entry point.
+  - paths: [src/flow_factory/hparams/component_execution.py, src/flow_factory/models/component_execution.py,
+            src/flow_factory/models/loader.py]
+    requires: [components.execution_policy]
+    reason: Auxiliary policy admission binds model aliases and reward deduplication keys without preparing weights.
   - paths: [tests/trainers/test_training_media_logging.py]
     requires: [logging.contracts]
     reason: Shared media budget, scored-media detachment and runtime-feedback logging use the CPU logging oracle.
