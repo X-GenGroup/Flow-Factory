@@ -9,6 +9,9 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [tests/data_utils/test_sharded_preprocessing.py]
+    requires: [components.sharded_preprocessing]
+    reason: Coordinated cache misses and tail calls need real sharded encoder execution on two CPU ranks.
   - paths: [src/flow_factory/models/auxiliary_fsdp.py, tests/models/test_auxiliary_fsdp.py]
     requires: [components.frozen_input_gradients]
     reason: Real FSDP2 method hooks must preserve frozen decoder and scorer input gradients.
@@ -1452,6 +1455,10 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths: [src/flow_factory/trainers/rl/refl.py]
+    symbols: [ReFLTrainer._init_dataloader]
+    requires: [components.sharded_preprocessing, components.refl_joint_auxiliary_fsdp2]
+    reason: Sharded preprocessing changes cache and encoder scheduling on the admitted SD3.5 FSDP2 path.
   - paths: [src/flow_factory/trainers/rl/refl.py]
     symbols: ['<module>', ReFLTrainer.runtime_execution_identity_payload]
     requires: [algorithm.refl.contracts]

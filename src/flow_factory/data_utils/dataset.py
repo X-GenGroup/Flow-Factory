@@ -31,7 +31,7 @@ from datasets import Dataset as HFDataset
 from datasets import Features as HFFeatures
 from datasets import Image as HFImage
 from datasets import Sequence as HFSequence
-from datasets import load_dataset, load_from_disk
+from datasets import concatenate_datasets, load_dataset, load_from_disk
 from datasets.arrow_writer import ArrowWriter
 from datasets.utils.logging import disable_progress_bar
 from PIL import Image
@@ -156,6 +156,7 @@ class GeneralDataset(Dataset):
         raw_dataset: Optional[HFDataset] = None,
         source_hash_override: Optional[str] = None,
         passthrough_columns: Optional[Sequence[str]] = None,
+        align_preprocessing_batches: bool = False,
         **kwargs,
     ):
         """Initialize GeneralDataset.
@@ -200,6 +201,8 @@ class GeneralDataset(Dataset):
                 top level unchanged. They are never forwarded to ``preprocess_func``
                 or copied into ``metadata``. A preprocess result using one of these
                 names is rejected as a collision.
+            align_preprocessing_batches: Pad the collective call schedule of distributed
+                preprocessing while preserving each rank's real rows and batch sizes.
             **kwargs: Additional arguments (ignored)
 
         Note:
@@ -280,6 +283,7 @@ class GeneralDataset(Dataset):
                 extra_hash_strs=extra_hash_strs,
                 target_arrow_path=target_arrow_path,
                 source_hash_override=self._source_hash_override,
+                align_batches=align_preprocessing_batches,
             )
         else:
             self.processed_dataset = loaded_raw_dataset
@@ -325,6 +329,7 @@ class GeneralDataset(Dataset):
         extra_hash_strs: Optional[List[str]] = None,
         target_arrow_path: Optional[str] = None,
         source_hash_override: Optional[str] = None,
+        align_batches: bool = False,
     ) -> HFDataset:
         """Apply preprocessing to raw dataset with caching.
 
@@ -381,13 +386,35 @@ class GeneralDataset(Dataset):
                 ),
             )
 
+        preprocess_batch = self._preprocess_batch
         if self.num_shards and self.num_shards > 1:
             if self.shard_index is None:
                 raise ValueError(
                     f"shard_index must be set when num_shards > 1, "
                     f"got num_shards={self.num_shards}, shard_index=None"
                 )
-            raw_dataset = self._shard_dataset(raw_dataset, self.shard_index, self.num_shards)
+            source = raw_dataset
+            raw_dataset = self._shard_dataset(source, self.shard_index, self.num_shards)
+            if align_batches and len(source):
+                original_rows = len(raw_dataset)
+                per_rank, remainder = divmod(len(source), self.num_shards)
+                max_batches = math.ceil((per_rank + remainder) / preprocessing_batch_size)
+                scheduled_rows = max_batches * preprocessing_batch_size
+                padding_rows = scheduled_rows - original_rows
+                if padding_rows:
+                    raw_dataset = concatenate_datasets(
+                        [raw_dataset, source.select([0] * padding_rows)]
+                    )
+
+                def preprocess_batch(batch, indices, **paths):
+                    real = sum(index < original_rows for index in indices)
+                    if real == len(indices):
+                        return self._preprocess_batch(batch, indices, **paths)
+                    count = max(1, real)
+                    partial = {name: values[:count] for name, values in batch.items()}
+                    encoded = self._preprocess_batch(partial, indices[:count], **paths)
+                    return {name: values[:real] for name, values in encoded.items()}
+
             shard_fingerprint = (
                 f"{os.path.basename(self.merged_cache_path)}"
                 f"{self._shard_suffix(self.shard_index, self.num_shards)}"
@@ -413,7 +440,7 @@ class GeneralDataset(Dataset):
                 return processed_dataset
 
         processed_dataset = raw_dataset.map(
-            self._preprocess_batch,
+            preprocess_batch,
             batched=True,
             with_indices=True,
             batch_size=preprocessing_batch_size,
