@@ -140,4 +140,4 @@ it with a separate replicated scorer identity.
 
 See [component execution](../configuration/loading-and-resume.md#auxiliary-component-execution)
 for placement and checkpoint requirements. The [v0.6 qualification plan](../../roadmap/milestones/v0.5x-v0.6.md#p21c)
-records the remaining CUDA checks for this recipe.
+records the CPU and CUDA qualification for this recipe.
