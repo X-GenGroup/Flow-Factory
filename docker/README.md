@@ -1,5 +1,27 @@
 # CUDA training image
 
+## v0.6.0 image
+
+The [v0.6.0 Release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.6.0) provides the
+image for the tagged source. It uses Python 3.12, CUDA 12.9, Torch 2.11.0, and the locked
+TorchAudio and TorchCodec CPU wheels with FFmpeg. See the Release evidence for the image digest,
+source and recipe revisions, installed dependencies, and offline smoke result.
+
+```bash
+docker pull ghcr.io/x-gengroup/flow-factory:0.6.0
+docker run --rm -it --gpus all --ipc=host \
+  -v /path/to/configs:/configs:ro \
+  -v /path/to/data:/data:ro \
+  -v /path/to/outputs:/outputs \
+  -v /path/to/huggingface:/cache/huggingface \
+  -e HF_HOME=/cache/huggingface \
+  ghcr.io/x-gengroup/flow-factory:0.6.0 \
+  ff-train /configs/train.yaml
+```
+
+Set the paths in your recipe to the mounted data and outputs. The aliases `0.6.0` and
+`v0.6.0` identify the same release image. Pin the recorded digest for reproducible deployment.
+
 ## Published v0.5.0 image
 
 The [v0.5.0 release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0) publishes the
@@ -97,18 +119,18 @@ extras are also separate installs. See [the baseline limitations](https://github
 
 ## Verify an image
 
-The commands below use the current v0.5.0 image; the preceding v0.2.0 record is historical.
+The commands below verify the v0.6.0 image.
 
 The publish workflow runs the CPU check inside the built image with networking disabled. It tests
 CLI entry points, DeepSpeed/TorchCodec imports and a small SD3 denoiser forward/backward/update;
 it downloads no weights and is not a GPU training qualification matrix.
 
 ```bash
-docker run --rm --network none ghcr.io/x-gengroup/flow-factory:0.5.0 \
+docker run --rm --network none ghcr.io/x-gengroup/flow-factory:0.6.0 \
   python docker/smoke.py
 
 docker run --rm --network none --gpus 'device=0' \
-  ghcr.io/x-gengroup/flow-factory:0.5.0 \
+  ghcr.io/x-gengroup/flow-factory:0.6.0 \
   python docker/smoke.py --device cuda
 ```
 

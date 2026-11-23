@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0
+
+See the [release notes](docs/release/v0.6-notes.md) for recipes, upgrade instructions and evidence.
+
+- Add DiffusionART with shared trajectory retention and configurable sequential updates.
+- Add differentiable reward capabilities and ReFL clean-state decoding across all 19 adapters.
+- Support opt-in FSDP2 placement for SD3.5 ReFL text encoders, the frozen VAE and PickScore,
+  with cache-aware preprocessing and fixed-topology continuation.
+- Add SD3.5 Euler ODE DRaFT-K and DRTune, including early stopping and data-only DDP/FSDP2.
+- Route training sample media through shared logging and `max_logged_train_samples`.
+- Raise the PyTorch floor to 2.11. The CUDA image and package checks share the release dependency
+  lock. Targeted tests cover Torch 2.11.0, 2.12.1, 2.13.0 and 2.14.1.
+
 ## 0.5.0 — release preparation
 
 The declared TP/SP/Ulysses-CP implementation is integrated across 19 model adapters and 14

@@ -60,7 +60,7 @@ their absence does not make an unrelated adapter unavailable.
 |---|---|
 | [v0.5.0 release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0) | Published wheel, sdist, CUDA image and durable evidence; Torch 2.10.0 release constraints |
 | [v0.5.1 source tag](https://github.com/X-GenGroup/Flow-Factory/tree/v0.5.1) | Subsequent Torch 2.10/2.11 support; no separate GitHub Release or image |
-| v0.6.0 source | Torch >=2.11, with targeted checks on 2.11–2.14 |
+| [v0.6.0 Release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.6.0) | Wheel, sdist, CUDA image and evidence. Torch >=2.11, with targeted checks on 2.11–2.14 |
 
 The [container guide](../docker/README.md) records the published image digest and source identity.
 Use that immutable image for the release environment, or install current source with the selected

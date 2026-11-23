@@ -24,12 +24,14 @@ receipts remain separate and identify their installed package and selected test 
 1. Verify the integration main checks and evidence continuity; inspect any changed merge tree.
    Compare runtime source hashes with the tested artifacts. A changed runtime owner needs its own
    focused evidence before release.
-2. Confirm `pyproject.toml` says `0.5.0`, then create an annotated `v0.5.0` tag on that reviewed
-   integration commit and push it. Tag creation is an explicit maintainer delivery action.
+2. Confirm `pyproject.toml` matches the intended tag and the commit contains the corresponding
+   `docs/release/v<major>.<minor>-notes.md` file. For v0.6.0, the version is `0.6.0` and the
+   notes are [v0.6-notes.md](v0.6-notes.md). Create and push the annotated tag on that reviewed
+   integration commit. Tag creation is an explicit maintainer delivery action.
 3. Dispatch the stable workflow **from the same tag**:
 
    ```bash
-   gh workflow run release.yml --ref v0.5.0 -f tag=v0.5.0
+   gh workflow run release.yml --ref v0.6.0 -f tag=v0.6.0
    ```
 
 4. The identity job checks the tag commit, checked-out workflow, clean source and package version.
@@ -40,8 +42,9 @@ receipts remain separate and identify their installed package and selected test 
    workflow URL and checksums in the release records. Do not claim publication based only on a
    merged PR or a successful preview.
 
-The workflow does not publish to PyPI. The image aliases `v0.5.0` and `0.5.0` are immutable;
-`latest` advances only for a stable version. Source and recipe must match for new releases.
+Distribution assets are published on GitHub. The versioned GHCR aliases, such as `v0.6.0`
+and `0.6.0`, are immutable. `latest` advances only for a stable version.
+Source and recipe must match for new releases.
 Historical v0.1–v0.4 container builds retain their recorded separate-recipe behavior.
 
 ## Failure and evidence handling

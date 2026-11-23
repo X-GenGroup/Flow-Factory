@@ -38,10 +38,10 @@ The authoritative list is `pyproject.toml` `[project.dependencies]` (20+ package
 
 | Package | Supported Version | Purpose |
 |---------|-------------|---------|
-| `torch` | >= 2.10.0 | PyTorch core, AdamW, and the native `torch.optim.Muon` API |
-| `torchvision` | >= 0.25.0 | Vision utilities; paired baseline for PyTorch 2.10 |
-| `torchaudio` | >= 2.10.0 | Audio I/O (audio / audio-video models, CLAP) |
-| `torchcodec` | >= 0.10.0 | Runtime used by TorchAudio 2.10 `load` / `save` APIs |
+| `torch` | >= 2.11.0 | PyTorch core, AdamW, and native `torch.optim.Muon` |
+| `torchvision` | >= 0.26.0 | Vision utilities paired with the installed PyTorch release |
+| `torchaudio` | >= 2.11.1 | Audio I/O (audio / audio-video models, CLAP) |
+| `torchcodec` | >= 0.12.0 | Runtime for TorchAudio `load` and `save` |
 | `transformers` | >= 4.57.1 | Text encoders, tokenizers |
 | `diffusers` | >= 0.42.1 | Diffusion pipelines, schedulers, MiniMax H3 and LTX2 APIs |
 | `accelerate` | >= 1.14.0 | Distributed training, mixed precision, and max reduction |
@@ -59,24 +59,23 @@ The authoritative list is `pyproject.toml` `[project.dependencies]` (20+ package
 - DeepSpeed is optional — Accelerate alone handles most distributed scenarios.
 
 ### Muon
-- The `torch>=2.10.0` baseline includes `torch.optim.Muon`. Runtime capability detection remains
+- The PyTorch baseline includes `torch.optim.Muon`. Runtime capability detection remains
   authoritative for vendor or custom builds that may omit the API.
 - Muon is supported with DDP and FSDP2. The pre-load optimizer/backend validator rejects
   DeepSpeed and FSDP1 before pretrained weights are loaded.
 
 ### Torch 2.11 runtime
-- The 2.10 package floor remains supported. The additional 2.11 tuple, Hopper SDPA guard,
-  native FSDP checkpoint replay, evidence and benchmark are documented in
-  [Torch 2.11 qualification](../../docs/development/validation/torch211.md).
+- Torch 2.11 is the package floor. [The v0.6 release notes](../../docs/release/v0.6-notes.md)
+  link the differentiable sampler checks. [Torch 2.11 qualification](../../docs/development/validation/torch211.md)
+  records the Hopper SDPA guard, FSDP checkpoint replay and earlier benchmark.
 - Newer CP dependency lines warn rather than fail solely for being unmeasured. Required API
   floors and structural capability checks still fail early.
 
 ### TorchAudio and TorchCodec
-- TorchAudio 2.10 delegates `torchaudio.load` and `torchaudio.save` to TorchCodec. The matching
-  baseline is TorchCodec 0.10, and its native extension also needs FFmpeg 4–8 shared libraries.
-- The 2.11 qualification uses TorchAudio 2.11.1 and TorchCodec 0.12.0 CPU wheels alongside
-  cu128 Torch. Default PyPI media wheels require CUDA 13; use the documented CPU wheel index
-  for this CUDA 12.8 tuple. Real WAV I/O, resampling backward, MelSpectrogram and fbank are tested.
+- TorchAudio delegates `torchaudio.load` and `torchaudio.save` to TorchCodec. The release locks
+  TorchAudio 2.11.1 and TorchCodec 0.12.0 CPU wheels alongside cu129 Torch. Use the CPU wheel
+  index for the documented CUDA tuple. WAV I/O, resampling backward, MelSpectrogram and fbank
+  are covered by the targeted Torch checks.
 - The CUDA Docker image installs FFmpeg. Non-container installations must provide compatible
   system FFmpeg libraries; the `imageio[ffmpeg]` executable bundle does not provide those shared
   libraries.

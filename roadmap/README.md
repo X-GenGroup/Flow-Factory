@@ -1,7 +1,8 @@
 # Flow-Factory roadmap
 
-Latest reviewed main is `3e619c05`. It includes ART/shared replay #377, reference MSE #379,
-async media logging #380, differentiable reward #381, ReFL #382 and component policy #385.
+The v0.6 training stack is merged on main at `d09f38b7`. It builds on ART/shared replay #377,
+reference MSE #379, async media logging #380, differentiable reward #381, ReFL #382 and
+component policy #385.
 P01–P14 are merged and [v0.5.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0).
 The historical v0.5.0 19-model / 14-trainer TP/SP/Ulysses-CP inventory, SP completion, shared parallelism owners,
 P12j sharded loading and P13a evidence continuity remain the implemented foundation. Historical
@@ -10,21 +11,20 @@ P12j sharded loading and P13a evidence continuity remain the implemented foundat
 
 P15a user documentation merged in #376. [P18 DiffusionART](milestones/v0.5x-v0.6.md#p18)
 merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377). Its supported compositions
-and evidence are recorded in the
-[ART guide](../guidance/training/art.md). [P19](milestones/v0.5x-v0.6.md#p19) merged in #381 and
-#382, bringing the main registry to 16 trainers. [P20a](milestones/v0.5x-v0.6.md#p20a)
-merged in #385. ART experiment follow-through and v0.5.x publication can proceed independently.
-v0.6 combines ReFL and differentiable rewards with
-[component execution policies](milestones/v0.5x-v0.6.md#p20) and
-[DRaFT-K](milestones/v0.5x-v0.6.md#p21) and [DRTune](milestones/v0.5x-v0.6.md#p22).
+and evidence are recorded in the [ART guide](../guidance/training/art.md).
+[P19](milestones/v0.5x-v0.6.md#p19) merged in #381 and #382.
+[P20](milestones/v0.5x-v0.6.md#p20) adds auxiliary execution policies and sharding in #385–#387.
+[DRaFT-K](milestones/v0.5x-v0.6.md#p21) merged in #389 and #390.
+[DRTune](milestones/v0.5x-v0.6.md#p22) merged in #391–#393, bringing the registry to 18 trainers.
+See the [v0.6.0 release notes](../docs/release/v0.6-notes.md) for compatibility and artifacts.
 P15b–P15f target NCCL EP in v0.7 after v0.6. P16 targets optional DeepEP in v0.8. P17 remains the
 v1.0 stabilization boundary. See the [derivative/placement design](design/differentiable-rewards.md).
 
 Use independent worktrees and native Stack PRs when work is dependent; the user reviews and merges.
 Reuse valid GPU receipts at their original sources. Changed contracts select targeted local jobs
 within eight GPUs, not a Cartesian matrix, cross-node campaign or fixed reward deployment.
-Publication of v0.5.0 and the source-only v0.5.1 tag does not publish the later #375 or #377
-source as an image or a new release. See [installation identities](../guidance/installation.md).
+The published v0.5.0 image and source-only v0.5.1 tag describe their historical source.
+See [installation identities](../guidance/installation.md) for the v0.6 environment.
 
 This directory records planned work, dependencies, acceptance criteria, and contribution entry
 points. It does not declare a feature supported or replace the current development rules in
@@ -56,8 +56,8 @@ the milestone files.
 
 ## Release sequence
 
-The table preserves historical acceptance boundaries as well as future releases. Stable tags
-through v0.5.1 exist; the alpha/beta/RC rows were planning checkpoints, not published tags.
+The table preserves historical acceptance boundaries as well as future releases.
+The v0.5 alpha, beta and RC rows describe planning checkpoints.
 Future rows carry no calendar commitments. Tag each future integration commit only
 after its work, version metadata and required evidence are complete. The earlier v1.x/v2.x plan
 was never published as tags and is superseded by this sequence; preserve the actual v0.1.0 tag.
@@ -87,8 +87,8 @@ rather than reopening the original work items.
 P02 #281, P03 #282, P04 #283, P05 #285, P06 #286, P07 #287 and P08 #288 are merged.
 Tags `v0.3.0` and `v0.4.0` already point to `17e8be7c` and `fbb038e3`, respectively.
 Their package metadata is `0.3.0` and `0.4.0`. Do not move or recreate those tags.
-GitHub Release pages exist for v0.1.0, v0.2.0 and v0.5.0. A tag and a Release page are separate
-artifacts; v0.5.1 is source-only. Historical release-page backfill is optional.
+The earlier GitHub Releases are v0.1.0, v0.2.0 and v0.5.0. v0.5.1 is a source-only tag.
+Historical release-page backfill is optional.
 
 ## Starting evidence
 
@@ -125,10 +125,8 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| Component distribution | [P20b–P20c](milestones/v0.5x-v0.6.md#p20b): qualify the sharded auxiliary and preprocessing paths | P20a policy and P19 replicated reference |
-| ART experiment and publication | [P18 follow-through](milestones/v0.5x-v0.6.md#p18): record final experiment outcomes and review release identity | Independent of component execution |
-| DRaFT | [P21a](milestones/v0.5x-v0.6.md#p21a): differentiate the contiguous Euler ODE suffix | Reuse P19 differentiable feedback |
-| DRTune | [P22a–P22b](milestones/v0.5x-v0.6.md#p22): qualify sparse Euler gradients, then early-stop projection | Build on P21a/P21c and complete v0.6 qualification |
+| ART experiment follow-through | [P18](milestones/v0.5x-v0.6.md#p18): record final experiment outcomes | Independent of component execution |
+| Optional differentiable training memory work | [P21b](milestones/v0.5x-v0.6.md#p21b): evaluate staged VJPs against the end-to-end reference | DRaFT-K baseline |
 | Deferred EP model admission | [P15b](milestones/v0.6-v0.7.md#p15b): pin DiT-MoE semantics and upstream reference | Resolve conditioning, auxiliary objective and expert ownership before EP runtime |
 | NCCL EP integration | [P15c–P15f](milestones/v0.6-v0.7.md#p15c) | EP=1 reference, dispatch, FSDP/state, then online/offline integration |
 | Optional DeepEP | [P16a](milestones/v0.6-v0.7.md#p16a): qualify a hardware/toolchain/API tuple | NCCL reference stays supported; no mid-collective fallback |

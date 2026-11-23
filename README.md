@@ -15,8 +15,8 @@ Choose an objective and a model first, then a compatible tuning method and GPU l
 | Choose | Available paths | Start here |
 |---|---|---|
 | Model and modality | SD3.5, FLUX, Qwen Image, Z-Image, Wan, LTX-2, Bagel, SenseNova and MiniMax H3 families | [Model catalog](#-supported-models) |
-| Training paradigm | Offline demonstrations/preferences, online reward optimization, and distillation | [Feature overview](guidance/overview.md) |
-| Algorithm | 16 registered trainers, including SFT, DPO, GRPO/Guard, DPPO, NFT and multi-role distillation | [Algorithm catalog](#-supported-algorithms) |
+| Training paradigm | Offline demonstrations/preferences, online reward optimization, differentiable feedback, and distillation | [Feature overview](guidance/overview.md) |
+| Algorithm | 18 registered trainers, including SFT, DPO, GRPO/Guard, DiffusionART, ReFL, DRaFT-K and DRTune | [Algorithm catalog](#-supported-algorithms) |
 | Tuning | Full weights or LoRA, within the selected algorithm/model contract | [Algorithm guide](guidance/training/algorithms.md) |
 | Training backend | DDP, DeepSpeed ZeRO-2 and FSDP2 | [Choose a backend](guidance/overview.md#choose-a-training-backend) |
 | Parallel layout | Model-owned TP/SP and Ulysses CP, composed with FSDP2 | [4/4/8-GPU quickstart](guidance/parallelism/quickstart.md) |
@@ -29,6 +29,10 @@ measured. [Model coverage](guidance/parallelism/models.md) and
 EP/DeepEP are [planned for v0.7/v0.8](roadmap/milestones/v0.6-v0.7.md), not current features.
 
 # 🔥 News
+
+* **v0.6.0** adds [ReFL](guidance/training/refl.md), [DRaFT-K](guidance/training/draft.md),
+  [DRTune](guidance/training/drtune.md) and opt-in auxiliary sharding for SD3.5 ReFL.
+  The [release notes](docs/release/v0.6-notes.md) cover the PyTorch 2.11 minimum and CUDA image.
 
 * **[2026-11-10]** **TP/SP/CP and v0.5.0**: use the
   [parallel quickstart](guidance/parallelism/quickstart.md) to choose a 4- or 8-GPU layout.
