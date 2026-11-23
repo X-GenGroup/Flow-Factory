@@ -262,6 +262,35 @@ def _refl_trainer():
     return trainer, samples, parameters
 
 
+def _draft_trainer():
+    """Exercise DRaFT's live Euler suffix through the common backward owner."""
+    from flow_factory.hparams import DRaFTTrainingArguments
+
+    template, samples, parameters = _refl_trainer()
+    trainer = object.__new__(get_trainer_class("draft"))
+    trainer.__dict__.update(template.__dict__)
+    trainer.training_args = DRaFTTrainingArguments(
+        unique_sample_num_per_epoch=2,
+        num_inference_steps=2,
+        draft_backprop_steps=2,
+        gradient_accumulation_steps=1,
+        shuffle_samples=False,
+    )
+    for index, sample in enumerate(samples):
+        sample.all_latents = torch.tensor([[-0.3 - index, 0.8]])
+        sample.timesteps = torch.tensor([1.0, 0.5])
+    (weight,) = parameters
+
+    def forward_state(*, state, times, **kwargs):
+        latent = state.components["latent"]
+        delta = (times.next_timestep["latent"] - times.timestep["latent"])[:, None]
+        return SimpleNamespace(next_state=LatentState({"latent": latent + delta * weight * latent}))
+
+    trainer.adapter.forward_state = forward_state
+    trainer.adapter.cast_latents = lambda value, *, default_dtype: value.to(default_dtype)
+    return trainer, samples, parameters
+
+
 def _case(name, monkeypatch):
     """Build real objective entry points; new registry entries must supply a case."""
     metrics = defaultdict(list)
@@ -279,6 +308,8 @@ def _case(name, monkeypatch):
         trainer, samples, parameters = _online_trainer(name, monkeypatch)
     elif name == "refl":
         trainer, samples, parameters = _refl_trainer()
+    elif name == "draft":
+        trainer, samples, parameters = _draft_trainer()
     elif name == "art":
         trainer, samples, parameters = _art_trainer()
     elif name in {"dgpo", "crd"}:

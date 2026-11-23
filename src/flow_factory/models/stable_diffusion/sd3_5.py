@@ -475,7 +475,10 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         compute_log_prob: bool = True,
         extra_call_back_kwargs: List[str] = [],
         trajectory_indices: TrajectoryIndicesType = "all",
+        initial_state_only: bool = False,
     ) -> List[SD3_5Sample]:
+        if initial_state_only and (compute_log_prob or extra_call_back_kwargs):
+            raise ValueError("initial-state acquisition does not produce transition observations")
         # 1. Setup
         device = self.device
         dtype = self.pipeline.transformer.dtype
@@ -548,7 +551,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             )
         callback_collector = create_callback_collector(trajectory_indices, num_inference_steps)
 
-        for i, t in enumerate(timesteps):
+        for i, t in enumerate(timesteps[:0] if initial_state_only else timesteps):
             current_noise_level = self.scheduler.get_noise_level_for_timestep(t)
             t_next = timesteps[i + 1] if i + 1 < len(timesteps) else torch.tensor(0, device=device)
             return_kwargs = list(
@@ -584,7 +587,9 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             )
 
         # 6. Decode latents
-        images = self.decode_latents(latents=latents, output_type="pt")
+        images = (
+            None if initial_state_only else self.decode_latents(latents=latents, output_type="pt")
+        )
 
         # 7. Create samples
         extra_call_back_res = callback_collector.get_result()  # (B, len(trajectory_indices), ...)
@@ -632,7 +637,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
                 # Image & metadata
                 height=height,
                 width=width,
-                image=images[b],
+                image=images[b] if images is not None else None,
                 # Extra kwargs
                 extra_kwargs={
                     **{k: v[b] for k, v in extra_call_back_res.items()},

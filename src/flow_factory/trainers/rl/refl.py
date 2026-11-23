@@ -38,6 +38,7 @@ from ..abc import BaseTrainer
 from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.forward_kwargs import replay_forward_kwargs
 from ..common.group_noise import identity_timestep_generator
+from ..common.reward_gradient import reward_source_names, scorer_identity
 
 
 class ReFLTrainer(BaseTrainer):
@@ -90,24 +91,7 @@ class ReFLTrainer(BaseTrainer):
     def runtime_execution_identity_payload(self) -> dict:
         """Bind resolved scorer revisions and preprocessing to drained continuation."""
         identity = super().runtime_execution_identity_payload()
-        scorers = {}
-        for name, scorer in self.reward_models.items():
-            config = getattr(scorer.model, "config", None)
-            processor = getattr(scorer, "processor", None)
-            image_processor = getattr(processor, "image_processor", None)
-            scorers[name] = {
-                "class": f"{type(scorer).__module__}.{type(scorer).__qualname__}",
-                "gradient_fields": scorer.gradient_capability.input_fields,
-                "gradient_alternatives": scorer.gradient_capability.alternative_input_fields,
-                "model_revision": getattr(
-                    scorer, "resolved_model_revision", getattr(config, "_commit_hash", None)
-                ),
-                "processor_revision": getattr(scorer, "resolved_processor_revision", None),
-                "image_preprocessing": (
-                    image_processor.to_dict() if image_processor is not None else None
-                ),
-            }
-        identity["differentiable_scorers"] = scorers
+        identity["differentiable_scorers"] = scorer_identity(self.reward_models)
         identity["differentiable_decode_fields"] = self.adapter.differentiable_decode_fields
         identity["replay_step_scope"] = "world"
         if getattr(self, "_sharded_auxiliaries", ()):
@@ -207,16 +191,4 @@ class ReFLTrainer(BaseTrainer):
 
     def _reward_source_names(self, samples) -> list[str]:
         """Resolve source-less single-source batches without guessing mixed routing."""
-        sources = self.config.data_args.source_id_to_name
-        names = []
-        for sample in samples:
-            if sample.source_id is None:
-                training_sources = self.config.data_args.training_datasets
-                if len(training_sources) != 1:
-                    raise ValueError(
-                        f"ReFL sample lacks source identity; training sources={[source.name for source in training_sources]!r}"
-                    )
-                names.append(training_sources[0].name)
-            else:
-                names.append(sources[int(sample.source_id)])
-        return names
+        return reward_source_names(self.config.data_args, samples)

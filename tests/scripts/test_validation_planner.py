@@ -1450,6 +1450,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "refl-sd35-ddp",
                 "refl-flux-tp-cp",
                 "refl-real-pickscore-cuda",
+                "draft-k-sd35-fsdp2",
                 "refl-sd35-joint-auxiliary-fsdp2",
                 "refl-sd35-frozen-auxiliary-fsdp2",
                 "scheduler-replay-flux-native",

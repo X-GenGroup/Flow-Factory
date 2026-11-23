@@ -33,6 +33,7 @@
 - [TDM](#tdm)
 - [TDM-R1](#tdm-r1)
 - [ReFL](#refl)
+- [DRaFT-K](#draft-k)
 - [DiffusionART](#diffusionart)
 - [DiffusionNFT](#diffusionnft)
    - [Old Policy via EMA](#old-policy-via-ema)
@@ -1077,3 +1078,10 @@ ReFL uses `generation + differentiable_reward`. A selected saved-state predictio
 projected to clean data, decoded and scored with input gradients through frozen auxiliary
 networks. Its training rewards declare gradient capabilities. Read the
 [ReFL guide](refl.md) for objective, late-step selection, recipe and supported layouts.
+
+## DRaFT-K
+
+DRaFT-K evaluates a differentiable reward on the decoded sampling endpoint. The
+first `T - K` Euler ODE steps run without gradients and the last `K` steps
+differentiate through each successive latent. See the [DRaFT-K guide](draft.md)
+for the SD3.5 recipe and validation scope.
