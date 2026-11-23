@@ -677,6 +677,7 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             "dt",
             "log_prob",
         ],
+        prediction_gradients: Literal["full", "parameters", "none"] = "full",
     ) -> FlowMatchEulerDiscreteSDESchedulerOutput:
         """Core forward pass for T2I generation.
 
@@ -694,10 +695,17 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             compute_log_prob: Whether to compute log probabilities.
             return_kwargs: List of outputs to return.
             noise_level: Current noise level for SDE sampling.
+            prediction_gradients: Derivatives of the denoiser prediction. ``parameters``
+                detaches its latent input, and ``none`` evaluates it without gradients.
+                The scheduler always consumes the original live latent.
 
         Returns:
             FlowMatchEulerDiscreteSDESchedulerOutput containing requested outputs.
         """
+        if prediction_gradients not in ("full", "parameters", "none"):
+            raise ValueError(f"unknown SD3.5 prediction_gradients {prediction_gradients!r}")
+        prediction_input = latents if prediction_gradients == "full" else latents.detach()
+
         # 1. Prepare variables
         batch_size = latents.shape[0]
         timestep = t.expand(batch_size).to(latents.dtype)
@@ -722,23 +730,24 @@ class SD3_5Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
             pooled_prompt_embeds_input = torch.cat(
                 [negative_pooled_prompt_embeds, pooled_prompt_embeds], dim=0
             )
-            latents_input = torch.cat([latents, latents], dim=0)
+            latents_input = torch.cat([prediction_input, prediction_input], dim=0)
             timestep_input = timestep.repeat(2)
         else:
             prompt_embeds_input = prompt_embeds
             pooled_prompt_embeds_input = pooled_prompt_embeds
-            latents_input = latents
+            latents_input = prediction_input
             timestep_input = timestep
 
         # 3. Transformer forward pass
-        velocity = self.transformer(
-            hidden_states=latents_input,
-            timestep=timestep_input,
-            encoder_hidden_states=prompt_embeds_input,
-            pooled_projections=pooled_prompt_embeds_input,
-            joint_attention_kwargs=joint_attention_kwargs,
-            return_dict=False,
-        )[0]
+        with torch.set_grad_enabled(torch.is_grad_enabled() and prediction_gradients != "none"):
+            velocity = self.transformer(
+                hidden_states=latents_input,
+                timestep=timestep_input,
+                encoder_hidden_states=prompt_embeds_input,
+                pooled_projections=pooled_prompt_embeds_input,
+                joint_attention_kwargs=joint_attention_kwargs,
+                return_dict=False,
+            )[0]
 
         # 4. Apply CFG
         if do_classifier_free_guidance:

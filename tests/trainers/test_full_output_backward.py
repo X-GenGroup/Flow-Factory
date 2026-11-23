@@ -262,17 +262,18 @@ def _refl_trainer():
     return trainer, samples, parameters
 
 
-def _draft_trainer():
-    """Exercise DRaFT's live Euler suffix through the common backward owner."""
-    from flow_factory.hparams import DRaFTTrainingArguments
+def _euler_reward_trainer(name):
+    """Exercise both Euler reward graphs through the common backward owner."""
+    from flow_factory.hparams import DRaFTTrainingArguments, DRTuneTrainingArguments
 
     template, samples, parameters = _refl_trainer()
-    trainer = object.__new__(get_trainer_class("draft"))
+    trainer = object.__new__(get_trainer_class(name))
     trainer.__dict__.update(template.__dict__)
-    trainer.training_args = DRaFTTrainingArguments(
+    args_class = DRaFTTrainingArguments if name == "draft" else DRTuneTrainingArguments
+    trainer.training_args = args_class(
         unique_sample_num_per_epoch=2,
         num_inference_steps=2,
-        draft_backprop_steps=2,
+        **{f"{name}_backprop_steps": 2},
         gradient_accumulation_steps=1,
         shuffle_samples=False,
     )
@@ -281,10 +282,12 @@ def _draft_trainer():
         sample.timesteps = torch.tensor([1.0, 0.5])
     (weight,) = parameters
 
-    def forward_state(*, state, times, **kwargs):
+    def forward_state(*, state, times, prediction_gradients, **kwargs):
         latent = state.components["latent"]
         delta = (times.next_timestep["latent"] - times.timestep["latent"])[:, None]
-        return SimpleNamespace(next_state=LatentState({"latent": latent + delta * weight * latent}))
+        with torch.set_grad_enabled(torch.is_grad_enabled() and prediction_gradients != "none"):
+            prediction = weight * (latent if prediction_gradients == "full" else latent.detach())
+        return SimpleNamespace(next_state=LatentState({"latent": latent + delta * prediction}))
 
     trainer.adapter.forward_state = forward_state
     trainer.adapter.cast_latents = lambda value, *, default_dtype: value.to(default_dtype)
@@ -308,8 +311,8 @@ def _case(name, monkeypatch):
         trainer, samples, parameters = _online_trainer(name, monkeypatch)
     elif name == "refl":
         trainer, samples, parameters = _refl_trainer()
-    elif name == "draft":
-        trainer, samples, parameters = _draft_trainer()
+    elif name in {"draft", "drtune"}:
+        trainer, samples, parameters = _euler_reward_trainer(name)
     elif name == "art":
         trainer, samples, parameters = _art_trainer()
     elif name in {"dgpo", "crd"}:

@@ -18299,3 +18299,64 @@ cases:
     packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
     environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1'}
     model_paths: []
+- id: drtune-euler-cpu
+  covers: [algorithm.drtune.contracts]
+  facets: [objective, model_adapter, distributed]
+  owners: [src/flow_factory/trainers/rl/drtune.py, src/flow_factory/hparams/training_args/drtune.py]
+  command: [python3, -m, pytest, -q, -s, tests/trainers/test_drtune.py, tests/distributed/test_drtune_training.py, -k, 'not cuda']
+  fixture: Independent nonlinear Euler derivative and native tiny SD3.5 with a varying tensor image reward.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Check early sparse gradients, detached-input and live-state controls, native endpoint,
+      frozen auxiliary isolation, exact next-update continuation and rank-consistent DDP masks.
+  artifacts:
+  - tests/trainers/test_drtune.py
+  - tests/distributed/test_drtune_training.py
+  - tests/distributed/test_draft_training.py
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - examples/drtune/lora/sd3_5/pickscore.yaml
+  cost_seconds: 35
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []
+- id: drtune-sd35-ddp
+  covers: [algorithm.drtune.ddp]
+  facets: [objective, model_adapter, distributed]
+  owners: [src/flow_factory/trainers/rl/drtune.py]
+  command: [python3, -m, pytest, -q, -s, tests/distributed/test_drtune_training.py::test_native_sd35_drtune_cuda_ddp]
+  fixture: Native tiny SD3.5 sparse Euler schedule and a differentiable tensor image reward on two CUDA ranks.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Check equal sparse masks, nonzero policy gradients, frozen auxiliaries and exact
+      replica parameter agreement after accumulated updates.
+  artifacts:
+  - tests/distributed/test_drtune_training.py
+  - tests/distributed/test_draft_training.py
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - examples/drtune/lora/sd3_5/pickscore.yaml
+  cost_seconds: 40
+  resources:
+    gpus: 2
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1'}
+    model_paths: []

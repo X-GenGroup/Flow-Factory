@@ -9,6 +9,14 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/hparams/training_args/drtune.py, src/flow_factory/trainers/rl/drtune.py,
+            examples/drtune/**, tests/trainers/test_drtune.py, tests/distributed/test_drtune_training.py]
+    requires: [algorithm.drtune.contracts, algorithm.drtune.ddp]
+    reason: Sparse Euler gradients, rank-consistent selection and exact continuation need native CPU and DDP proofs.
+  - paths: [src/flow_factory/trainers/common/euler_reward.py]
+    requires: [algorithm.drtune.contracts, algorithm.drtune.ddp, algorithm.draft.contracts,
+               algorithm.draft.ddp, algorithm.draft.fsdp2]
+    reason: Shared terminal acquisition and backward entry points serve both Euler reward trainers.
   - paths: [src/flow_factory/hparams/training_args/draft.py, src/flow_factory/trainers/rl/draft.py,
             examples/draft/**, tests/trainers/test_draft.py, tests/distributed/test_draft_training.py]
     requires: [algorithm.draft.contracts, algorithm.draft.ddp, algorithm.draft.fsdp2]

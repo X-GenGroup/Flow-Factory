@@ -14,20 +14,17 @@
 
 """DRaFT-K on an Euler flow sampling chain."""
 
-from collections import defaultdict
 from collections.abc import Callable
 
 import torch
 from accelerate.utils import DistributedType
-from torch.nn.parallel import DistributedDataParallel
 
 from ...contracts.execution import DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT
-from ...models.model_bundle import composed_forward
-from ...samples import BaseSample, ComponentTimes, LatentState, StackedSampleBatch
+from ...samples import BaseSample, LatentState, StackedSampleBatch
 from ...scheduler.flow_match_euler_discrete import FlowMatchEulerDiscreteSDEScheduler
 from ..abc import BaseTrainer
-from ..common.forward_kwargs import replay_forward_kwargs
-from ..common.reward_gradient import reward_source_names, scorer_identity
+from ..common.euler_reward import acquire_euler_inputs, optimize_euler_reward, sample_euler_endpoint
+from ..common.reward_gradient import scorer_identity
 
 
 def unroll_sampling_suffix(
@@ -87,69 +84,18 @@ class DRaFTTrainer(BaseTrainer):
 
     def sample(self) -> list[BaseSample]:
         """Acquire only initial noise, conditioning and the native schedule."""
-        return self.generate_samples(
-            reward_buffer=None,
-            compute_log_prob=False,
-            trajectory_indices=[0],
-            initial_state_only=True,
-        )
+        return acquire_euler_inputs(self)
 
     def _sample_endpoint(self, batch: StackedSampleBatch) -> LatentState:
-        initial = batch["all_latents"][:, 0]
-        kwargs = replay_forward_kwargs(self, batch)
-
-        def advance(state, current, following):
-            result = self.adapter.forward_state(
-                batch=batch,
-                state=LatentState({"latent": state}),
-                times=ComponentTimes(
-                    timestep={"latent": current}, next_timestep={"latent": following}
-                ),
-                compute_log_prob=False,
-                return_fields=("next_latents",),
-                **kwargs,
-            )
-            return self.adapter.cast_latents(
-                result.next_state.components["latent"], default_dtype=initial.dtype
-            )
-
-        def sample():
+        def unroll(initial, timesteps, advance):
             return unroll_sampling_suffix(
-                initial, batch["timesteps"], self.training_args.draft_backprop_steps, advance
+                initial, timesteps, self.training_args.draft_backprop_steps, advance
             )
 
-        endpoint = (
-            composed_forward(self.model_bundle, sample)
-            if isinstance(self.model_bundle, DistributedDataParallel)
-            else sample()
-        )
-        return LatentState({"latent": endpoint})
+        return sample_euler_endpoint(self, batch, unroll)
 
     def optimize(self, samples: list[BaseSample]) -> None:
         """Differentiate one complete suffix and reward per accumulated microstep."""
-        loss_info = defaultdict(list)
-        self.adapter.train()
-        for inner_epoch in range(self.training_args.num_inner_epochs):
-            ordered = self._order_samples_for_optimize(samples, inner_epoch)
-            for batch in self._iter_prefetched_batches(
-                ordered, self.training_args.per_device_batch_size
-            ):
-                with self.accumulate_gradients():
-                    with self.autocast():
-                        endpoint = self._sample_endpoint(batch)
-                        media = self.adapter.decode_differentiable_state(endpoint, batch=batch)
-                    feedback = self.differentiable_feedback(
-                        prompt=list(batch["prompt"]),
-                        source_names=reward_source_names(self.config.data_args, batch.samples),
-                        **media,
-                    )
-                    terms = []
-                    for name, scores in feedback.scores.items():
-                        terms.append(-(scores * feedback.weights[name]).mean())
-                        loss_info[f"reward/{name}"].append(scores.detach().mean())
-                    loss = torch.stack(terms).sum()
-                    loss_info["loss"].append(loss.detach())
-                    self._backward_full_output_loss(loss)
-                    self.log_train_samples(batch.samples, media=media, rewards=feedback.scores)
-                    if self.accelerator.sync_gradients:
-                        loss_info = self._apply_optimizer_step(loss_info)
+        optimize_euler_reward(
+            self, samples, lambda batch, _inner_epoch, _batch_index: self._sample_endpoint(batch)
+        )
