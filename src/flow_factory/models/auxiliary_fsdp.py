@@ -21,12 +21,18 @@ from typing import TYPE_CHECKING
 import torch.distributed as dist
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
-from torch.distributed.fsdp import FSDPModule, fully_shard, register_fsdp_forward_method
+from torch.distributed.fsdp import (
+    CPUOffloadPolicy,
+    FSDPModule,
+    fully_shard,
+    register_fsdp_forward_method,
+)
 
 from .component_execution import OptimizationGradients
 
 if TYPE_CHECKING:
     from ..trainers.abc import BaseTrainer
+    from .abc import BaseAdapter
 
 
 def data_mesh(device_type: str) -> DeviceMesh:
@@ -35,7 +41,7 @@ def data_mesh(device_type: str) -> DeviceMesh:
 
 
 def shard_frozen_module(
-    module: nn.Module, mesh: DeviceMesh, *, methods: tuple[str, ...] = ()
+    module: nn.Module, mesh: DeviceMesh, *, methods: tuple[str, ...] = (), offload: bool = False
 ) -> None:
     """Shard one frozen root and register any native calls that bypass forward."""
     if isinstance(module, FSDPModule):
@@ -45,7 +51,8 @@ def shard_frozen_module(
     if any(not callable(getattr(module, name, None)) for name in methods):
         raise ValueError(f"auxiliary {type(module).__name__} lacks configured methods {methods}")
     module.eval()
-    fully_shard(module, mesh=mesh, reshard_after_forward=True)
+    kwargs = {"offload_policy": CPUOffloadPolicy()} if offload else {}
+    fully_shard(module, mesh=mesh, reshard_after_forward=True, **kwargs)
     for name in methods:
         register_fsdp_forward_method(module, name)
 
@@ -100,3 +107,26 @@ def prepare_reward_gradient_auxiliaries(trainer: BaseTrainer) -> tuple[str, ...]
     return tuple(f"model.{name}" for name in model_roots) + tuple(
         f"rewards.{name}" for name in scorer_names
     )
+
+
+def sharded_preprocessing_roots(adapter: BaseAdapter) -> tuple[str, ...]:
+    """Return admitted no-grad preprocessing roots."""
+    plan = getattr(adapter, "component_execution_plan", None)
+    if plan is None:
+        return ()
+    return tuple(
+        name
+        for name, execution in plan.model.items()
+        if execution.optimization_gradients is OptimizationGradients.NONE
+        and execution.policy is not None
+        and execution.policy.placement == "fsdp2"
+    )
+
+
+def prepare_sharded_preprocessing(adapter: BaseAdapter, roots: tuple[str, ...]) -> None:
+    """Prepare stage-loaded roots and keep CUDA shards on CPU between calls."""
+    mesh = data_mesh(adapter.accelerator.device.type)
+    for name in roots:
+        encoder = adapter._require_component(name)
+        shard_frozen_module(encoder, mesh, offload=mesh.device_type == "cuda")
+        adapter.set_component(name, encoder)

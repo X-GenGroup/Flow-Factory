@@ -43,6 +43,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 _PREPROCESSING_MODULE_LOADER: contextvars.ContextVar[Optional[Callable[[], None]]] = (
     contextvars.ContextVar("preprocessing_module_loader", default=None)
 )
+_SHARDED_PREPROCESSING: contextvars.ContextVar[Optional[Callable[[], None]]] = (
+    contextvars.ContextVar("sharded_preprocessing", default=None)
+)
 
 
 @contextlib.contextmanager
@@ -63,6 +66,24 @@ def deferred_preprocessing_modules(load: Callable[[], None]) -> Iterator[None]:
         yield
     finally:
         _PREPROCESSING_MODULE_LOADER.reset(token)
+
+
+@contextlib.contextmanager
+def coordinated_sharded_preprocessing(prepare: Callable[[], None]) -> Iterator[None]:
+    """Prepare loaded sharded encoders once and align calls on every cache miss."""
+    prepared = False
+
+    def prepare_once() -> None:
+        nonlocal prepared
+        if not prepared:
+            prepare()
+            prepared = True
+
+    token = _SHARDED_PREPROCESSING.set(prepare_once)
+    try:
+        yield
+    finally:
+        _SHARDED_PREPROCESSING.reset(token)
 
 
 def _every_process_cached(accelerator: Accelerator, cached: bool, enable_distributed: bool) -> bool:
@@ -155,10 +176,17 @@ def _create_or_load_dataset(
 
     cached = os.path.exists(merged_cache_path) and not base_kwargs.get("force_reprocess", False)
     load_modules = _PREPROCESSING_MODULE_LOADER.get()
-    if load_modules is not None and not _every_process_cached(
-        accelerator, cached, enable_distributed
-    ):
-        load_modules()
+    prepare_sharded = _SHARDED_PREPROCESSING.get()
+    if load_modules is not None:
+        all_cached = _every_process_cached(accelerator, cached, enable_distributed)
+        if not all_cached:
+            load_modules()
+        if prepare_sharded is not None and not all_cached:
+            prepare_sharded()
+            cached = False
+            # A reused part or a skipped schema probe would omit encoder collectives.
+            kwargs["force_reprocess"] = True
+            kwargs["align_preprocessing_batches"] = True
 
     if cached:
         if accelerator.is_local_main_process:

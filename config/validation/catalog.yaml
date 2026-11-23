@@ -18134,3 +18134,25 @@ cases:
     packages: [torch, pytest, transformers, diffusers, accelerate, peft, av]
     environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', FF_TEST_REAL_REWARD: '1', HF_HUB_OFFLINE: '1'}
     model_paths: [yuvalkirstain/PickScore_v1, laion/CLIP-ViT-H-14-laion2B-s32B-b79K]
+- id: sharded-preprocessing-gloo
+  covers: [components.sharded_preprocessing]
+  facets: [distributed, data_schema]
+  owners: [tests/data_utils/test_sharded_preprocessing.py]
+  command: [python3, -m, pytest, -q, tests/data_utils/test_sharded_preprocessing.py]
+  fixture: Shared Arrow cache and real CPU FSDP2 encoder coordinated over two Gloo ranks.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: Compare cached embeddings with dense preprocessing across mixed cache visibility,
+      empty shards, uneven batch counts and real partial batch widths.
+  artifacts: [tests/data_utils/test_sharded_preprocessing.py]
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, datasets, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []

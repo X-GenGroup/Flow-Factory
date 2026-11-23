@@ -9,6 +9,9 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [tests/data_utils/test_sharded_preprocessing.py]
+    requires: [components.sharded_preprocessing]
+    reason: Coordinated cache misses and tail calls need real sharded encoder execution on two CPU ranks.
   - paths: [src/flow_factory/models/auxiliary_fsdp.py, tests/models/test_auxiliary_fsdp.py]
     requires: [components.frozen_input_gradients]
     reason: Real FSDP2 method hooks must preserve frozen decoder and scorer input gradients.

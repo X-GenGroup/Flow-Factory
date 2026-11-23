@@ -203,6 +203,15 @@ def _validate_sharded_auxiliary(
         )
     if section == "model" and name == "vae":
         return
+    if section == "model" and name in ("text_encoder", "text_encoder_2", "text_encoder_3"):
+        if (
+            not config.data_args.enable_preprocess
+            or config.data_args.preprocess_parallelism != "global"
+        ):
+            raise ValueError(
+                f"{label} requires data.enable_preprocess=true and data.preprocess_parallelism='global'"
+            )
+        return
     if section != "rewards":
         raise ValueError(f"{label} requires an SD3.5 VAE or a synchronous training PickScore")
     reward = config.reward_args.get_by_name(name)

@@ -76,6 +76,15 @@ FSDP2 forward lifecycle, including backward recomputation. Sharded auxiliaries r
 and outside the optimizer. Exact-state continuation records the sharded component policy.
 Auxiliary preparation inherits loading, offload and precision and uses existing ranks.
 
+The same data-only SD3.5 path can shard `text_encoder`, `text_encoder_2` or
+`text_encoder_3` for preprocessing. Set `data.enable_preprocess: true` and
+`data.preprocess_parallelism: global` with a shared cache directory. All ranks
+skip a fully cached split. When any rank misses, every rank rebuilds its part
+and follows the same encoder call count. Each real batch retains its original
+width. Filler calls for short or empty shards contribute zero cache rows. CUDA
+encoder shards reside on the host between calls, and preprocessing keeps the
+original cache fingerprint.
+
 ## Choosing a resume mode
 
 | Intent | Required compatibility |

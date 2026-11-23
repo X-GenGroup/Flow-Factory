@@ -21,7 +21,12 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ...contracts.execution import DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT
-from ...models.auxiliary_fsdp import prepare_reward_gradient_auxiliaries
+from ...data_utils.loader import coordinated_sharded_preprocessing
+from ...models.auxiliary_fsdp import (
+    prepare_reward_gradient_auxiliaries,
+    prepare_sharded_preprocessing,
+    sharded_preprocessing_roots,
+)
 from ...models.model_bundle import composed_forward
 from ...models.trajectory_bridge import resolve_replay_projection_times
 from ...models.trajectory_bridge.masks import _expand_active_mask
@@ -72,6 +77,15 @@ class ReFLTrainer(BaseTrainer):
         for name in self.adapter.differentiable_decode_modules:
             self.adapter._require_component(name).eval().requires_grad_(False)
         self._sharded_auxiliaries = prepare_reward_gradient_auxiliaries(self)
+
+    def _init_dataloader(self):
+        roots = sharded_preprocessing_roots(self.adapter)
+        if not roots:
+            return super()._init_dataloader()
+        with coordinated_sharded_preprocessing(
+            lambda: prepare_sharded_preprocessing(self.adapter, roots)
+        ):
+            return super()._init_dataloader()
 
     def runtime_execution_identity_payload(self) -> dict:
         """Bind resolved scorer revisions and preprocessing to drained continuation."""
