@@ -1,8 +1,8 @@
 # CUDA 12.9 / Python 3.12 release baseline; keep PyTorch packages paired.
-torch==2.10.0
-torchvision==0.25.0
-torchaudio==2.10.0
-torchcodec==0.10.0
+torch==2.11.0
+torchvision==0.26.0
+torchaudio==2.11.1
+torchcodec==0.12.0
 accelerate==1.15.0
 diffusers==0.42.1
 transformers==5.20.2

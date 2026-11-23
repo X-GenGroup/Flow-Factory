@@ -51,12 +51,12 @@ COPY docker/docker-cuda/constraints.txt /app/docker/docker-cuda/constraints.txt
 RUN mkdir -p /app/src/flow_factory && touch /app/src/flow_factory/__init__.py
 
 ARG PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cu129
-RUN uv pip install \
-    torch==2.10.0 \
-    torchvision==0.25.0 \
-    torchaudio==2.10.0 \
-    torchcodec==0.10.0 \
-    --index-url "${PYTORCH_INDEX_URL}"
+RUN uv pip install --constraint docker/docker-cuda/constraints.txt \
+    torch torchvision --index-url "${PYTORCH_INDEX_URL}"
+
+# Audio processing uses CPU wheels with the CUDA-enabled Torch runtime.
+RUN uv pip install --constraint docker/docker-cuda/constraints.txt \
+    torchaudio torchcodec --index-url https://download.pytorch.org/whl/cpu
 
 RUN uv pip install --constraint docker/docker-cuda/constraints.txt ".[deepspeed,wandb]"
 

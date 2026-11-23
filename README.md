@@ -33,9 +33,9 @@ EP/DeepEP are [planned for v0.7/v0.8](roadmap/milestones/v0.6-v0.7.md), not curr
 * **[2026-11-10]** **TP/SP/CP and v0.5.0**: use the
   [parallel quickstart](guidance/parallelism/quickstart.md) to choose a 4- or 8-GPU layout.
   The [published release](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0)
-  provides a fixed Torch 2.10 environment. Latest `main` additionally has targeted
-  [Torch 2.10–2.14 qualification](docs/development/validation/torch210-214.md);
-  source updates do not change the published image.
+  provides a fixed Torch 2.10 environment. The subsequent
+  [Torch 2.10–2.14 qualification](docs/development/validation/torch210-214.md) tested
+  precision and CP compatibility across those versions.
 
 * **[2026-10-17]** **Prompt enhancement** as a separate step! `ff-prompt-enhance` rewrites a
   dataset's prompts with a model's prompt enhancer (FLUX.3 pup, FLUX.2, LTX-2, the Qwen-Image-2.1
@@ -205,7 +205,7 @@ cd Flow-Factory
 pip install -e .
 ```
 
-Flow-Factory requires Python 3.11 or newer and PyTorch 2.10 or newer (which provides the native
+Flow-Factory requires Python 3.11 or newer and PyTorch 2.11 or newer (which provides the native
 `torch.optim.Muon` used by Muon optimizer configs). `pip install -e .` installs released
 `diffusers>=0.42.1`, including FLUX.3 and Qwen-Image 2.1. No Diffusers submodule installation or
 VCS metadata is required for FLUX.3.
@@ -217,10 +217,10 @@ VCS metadata is required for FLUX.3.
   `[bagel]` extra is intentionally not part of `[all]` because flash-attn is heavy to build.
 - Experiment trackers: see [Experiment Trackers](#experiment-trackers). Reward-specific
   dependencies are listed in the [Rewards guide](guidance/training/rewards.md#built-in-reward-models).
-- PyAV >=17.0.0 decodes ordered video/audio references and target media. TorchAudio 2.10 delegates
+- PyAV >=17.0.0 decodes ordered video/audio references and target media. TorchAudio delegates
   audio loading and saving to TorchCodec, which also requires FFmpeg shared libraries.
 
-A CUDA training image (Python 3.12, **uv**-based install, PyTorch 2.10 + `cu129`, `deepspeed`,
+A CUDA training image (Python 3.12, **uv**-based install, PyTorch 2.11 + `cu129`, `deepspeed`,
 `wandb`, released `diffusers`, FFmpeg libraries) is defined under
 [`docker/docker-cuda/`](docker/docker-cuda/Dockerfile); see [`docker/README.md`](docker/README.md)
 for build and run instructions. For multi-node launches, see

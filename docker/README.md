@@ -38,7 +38,8 @@ NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter
 Use a driver compatible with CUDA 12.9; CUDA minor-version compatibility on older drivers has
 [feature restrictions](https://docs.nvidia.com/deploy/cuda-compatibility/minor-version-compatibility.html).
 
-Current-source builds use Python 3.12 and Diffusers 0.42.1, matching the project dependency floor.
+Current-source builds use Python 3.12, Torch 2.11.0 + cu129, Diffusers 0.42.1, and CPU wheels
+for TorchAudio and TorchCodec. The wheel and container checks share the release constraints.
 The published v0.2.0 image and its immutable build records retain their original dependencies.
 
 ## Use v0.2.0
