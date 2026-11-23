@@ -18103,3 +18103,34 @@ cases:
     packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
     environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
     model_paths: []
+- id: refl-sd35-frozen-auxiliary-fsdp2
+  covers: [components.refl_frozen_fsdp2]
+  facets: [distributed, model_adapter, feedback]
+  owners: [src/flow_factory/models/auxiliary_fsdp.py, src/flow_factory/trainers/rl/refl.py]
+  command: [python3, -m, pytest, -q, -s, tests/distributed/test_refl_sharded_auxiliary.py::test_cuda_sd35_refl_sharded_reward_and_decoder]
+  fixture: Native tiny SD3.5 with pretrained PickScore a4e4367c6dfa7288a00c550414478f865b875800.
+  fixture_kind: pretrained_weights
+  qa: Q3
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 1, dp_shard: 2, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: real
+    description: Compare replicated and sharded frozen auxiliaries for decoded images, real scores,
+      input and policy gradients, optimizer updates and the resumed next update.
+  artifacts:
+  - tests/distributed/test_refl_sharded_auxiliary.py
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/conftest.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/sd35_cp_fixture.py
+  - examples/refl/lora/sd3_5/pickscore.yaml
+  cost_seconds: 150
+  resources:
+    gpus: 2
+    packages: [torch, pytest, transformers, diffusers, accelerate, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', FF_TEST_REAL_REWARD: '1', HF_HUB_OFFLINE: '1'}
+    model_paths: [yuvalkirstain/PickScore_v1, laion/CLIP-ViT-H-14-laion2B-s32B-b79K]
