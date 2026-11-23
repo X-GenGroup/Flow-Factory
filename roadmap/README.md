@@ -17,7 +17,7 @@ merged in #385. ART experiment follow-through and v0.5.x publication can proceed
 v0.6 combines ReFL and differentiable rewards with
 [component execution policies](milestones/v0.5x-v0.6.md#p20) and
 [DRaFT-K](milestones/v0.5x-v0.6.md#p21). [P22 DRTune](milestones/v0.5x-v0.6.md#p22)
-follows v0.6 and can proceed alongside NCCL EP. P15b–P15f target NCCL EP in v0.7, and P16
+follows v0.6 qualification and takes priority over NCCL EP runtime work. P15b–P15f target NCCL EP in v0.7, and P16
 targets optional DeepEP in v0.8. P17 remains the
 v1.0 stabilization boundary. See the [derivative/placement design](design/differentiable-rewards.md).
 
