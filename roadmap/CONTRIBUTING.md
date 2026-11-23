@@ -18,7 +18,9 @@ Planning a release or GPU experiment does not itself authorize performing that d
 5. Link the merged implementation and durable evidence before marking the item done. Update the
    release record when a tag is actually published.
 
-The next development entry is [P20a component execution policy](milestones/v0.5x-v0.6.md#p20a).
+The component execution policy in [P20a](milestones/v0.5x-v0.6.md#p20a) is merged.
+[P20b–P21c](milestones/v0.5x-v0.6.md#p20b) own the v0.6 qualification, followed by
+[P22 DRTune](milestones/v0.5x-v0.6.md#p22).
 [P19 differentiable feedback and ReFL](milestones/v0.5x-v0.6.md#p19) are merged and provide the
 reference for component sharding and [P21 DRaFT-K](milestones/v0.5x-v0.6.md#p21).
 P15a and P18 ART are merged. [P18 experiment/publication follow-through](milestones/v0.5x-v0.6.md#p18)
@@ -29,7 +31,7 @@ retain evidence, not an instruction to rerun or reopen their completed stacks. A
 model layout still needs its own admission and evidence.
 
 A contribution need not implement an entire milestone or require a large GPU cluster. Preserve
-P00–P21 and existing child IDs. P19–P21 split the next algorithm/component work into coherent
+P00–P22 and existing child IDs. P19–P21 split the next algorithm/component work into coherent
 PRs; P15/P16 retain the deferred EP work; the milestone pages own their status and dependency links.
 
 ## Status and ownership

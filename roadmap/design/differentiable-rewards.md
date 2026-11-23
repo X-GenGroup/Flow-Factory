@@ -1,11 +1,12 @@
 # Differentiable feedback and component execution
 
-Design checkpoint for [P18–P21](../milestones/v0.5x-v0.6.md).
+Design checkpoint for [P18–P22](../milestones/v0.5x-v0.6.md).
 ART merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377) on the existing
 reward-regression path. Differentiable rewards and ReFL merged in
 [#381](https://github.com/X-GenGroup/Flow-Factory/pull/381) and
 [#382](https://github.com/X-GenGroup/Flow-Factory/pull/382). Flexible component placement and
-DRaFT-K complete the planned v0.6 scope before [NCCL EP](expert-parallelism.md).
+DRaFT-K complete the planned v0.6 scope. [P22 DRTune](../milestones/v0.5x-v0.6.md#p22)
+follows v0.6 alongside [NCCL EP](expert-parallelism.md).
 
 ## Separate three decisions
 
@@ -45,10 +46,11 @@ admission runs after scheduler/sampler resolution even with explicit gradient ac
 Reuse these owners instead of introducing algorithm-specific copies of replay selection.
 
 Retention selects which rollout states or transitions are saved. The trainer owns the derivative
-boundary. DRaFT-K needs the state at the entrance to the last `K` transitions and the corresponding
-schedule and conditioning. Each suffix transition consumes the previous transition's newly computed
-state. Terminal-state re-noising for NFT/AWM/DGPO/CRD continues to use the existing
-`TimeSampler` controls.
+boundary. DRaFT-K acquires initial noise, the native schedule and conditioning, then computes
+the suffix entry state using the same current policy that differentiates the suffix. Each
+transition consumes a newly computed state. DRTune can reuse this acquisition path and owns
+its training mask and early stop. Terminal-state re-noising for NFT/AWM/DGPO/CRD continues to
+use the existing `TimeSampler` controls.
 
 ## Distribution ownership
 
@@ -94,17 +96,71 @@ the solver update. With `K = T`, the same loop represents full-chain DRaFT. Star
 as the flow-matching adaptation and use the model's normal conditioning, guidance, state masks,
 and per-step precision. The paper's image experiments used DDIM.
 
-Reuse the adapter's typed state forward and native differentiable decoder, the scheduler's step
-math, and the P19 scorer. Use one policy version for the no-grad prefix and differentiated suffix
-in the reference objective. Where acquisition and optimization are separate, retain the
-suffix entry state and its policy identity through the existing trajectory owner. The Euler
-step can accept a recorded next state for replay. For the suffix, request a
-fresh ODE update and feed its output to the next step so the final reward reaches earlier policy
-calls. Keep the complete suffix and backward within the prepared model's supported lifecycle.
+DRaFT-K uses the typed state forward, native Euler update and differentiable decoder. It
+requests a fresh ODE update at every transition, so the terminal reward reaches the
+earliest differentiated policy call. Without activation checkpointing, autograd can retain
+a separate set of intermediates for each of the `K` denoiser calls even though they share
+weights. Checkpointing trades recomputation for lower activation residency. It leaves the
+gradient estimator intact. The SD3.5 recipe enables it through the existing model/backend
+policy, which has a single owner for checkpointing each block.
 
 DRaFT-LV is a follow-up estimator. It draws additional noises from the forward process at the
 last-step noise level of a generated endpoint and combines the resulting reward gradients.
 Its noise, reward reduction and gradient weighting need their own reference checks.
+
+### DRTune
+
+DRTune trains denoiser predictions at spaced positions with a random offset. The sampler's direct
+state term stays live when the denoiser receives a detached input.
+[Wu et al. (ECCV 2024), §3.2 and Algorithm 1](https://www.ecva.net/papers/eccv_2024/papers_ECCV/papers/10922.pdf)
+
+For the Euler ODE adaptation, let `delta_sigma = sigma_next - sigma`.
+
+```text
+model_input = stop_gradient(z)
+velocity = denoiser(model_input, sigma, condition)
+z_next = z + delta_sigma * velocity
+```
+
+Selected calls retain the parameter derivative of `velocity`. Other calls still advance the same
+forward trajectory and can compute their velocity under `no_grad`. The scheduler update then
+runs with the live `z`. In the FP32 Euler reference, the inter-state derivative through the direct
+term is the identity, so a reward gradient can reach an early selected call through many
+unselected steps. DRTune removes the denoiser-input Jacobian by design. DRaFT-K retains that
+Jacobian on the contiguous suffix. Both methods score the same native endpoint at fixed inputs
+and weights in the full-endpoint variant. Activation checkpointing is independent of this
+choice. The selected DRTune calls can still retain parameter-backward activations.
+
+| Algorithm | Scored state | Parameter-gradient path |
+| --- | --- | --- |
+| ReFL | Clean estimate from a saved late state | One replayed prediction |
+| DRaFT-K | Native final sample | Last K contiguous predictions with full state derivatives |
+| DRTune | Native final sample in P22a, early clean estimate in P22b | K spaced predictions with a live solver state and detached prediction input |
+
+**Reuse.** Keep the existing `generation + differentiable_reward` contract, source weights,
+frozen input-gradient decoding and reward, accumulation, logging, reducer composition and
+checkpoint ownership. Use DRaFT-K's SD3.5 initial-noise, conditioning and schedule acquisition.
+Use ReFL's `project_velocity_to_clean_state` boundary for the early-stop estimate. Keep native
+CFG, timestep/sigma, state casting and solver math in the adapter and scheduler.
+
+**New ownership.** Give DRTune a direct `BaseTrainer` implementation and typed arguments.
+The trainer chooses which calls keep parameter gradients and where to stop. Extract only the
+needed model-local prediction seam so the trainer can supply a detached denoiser input while
+the native scheduler consumes the live state. The current SD3.5 `forward_state` couples those
+two inputs through one state. Detaching the entire input to that call would also cut the
+solver gradient. Keep DRaFT-K's suffix helper and ReFL's rollout/replay loop separate. Start
+with direct autograd and defer a staged VJP until equivalent outputs and gradients and a
+measurable memory benefit are established.
+
+**Selection and projection.** Define the mask over the `N` visited prediction positions,
+with `1 <= K <= N`. Use stride `floor(N / K)` and a seeded zero-based offset in
+`[0, N - 1 - (K - 1) * stride]`. This yields exactly K distinct positions for every legal N
+and K, including divisible N/K and K=N. Algorithm 1 prints a start interval that is empty when
+T is divisible by K and can select steps outside an early-stopped trace. For the Euler adaptation,
+draw the legal stop first, then select within the executed positions. Count the terminal projection
+prediction among them if selected. An unselected stop prediction is detached while the projection
+still differentiates its direct state term. Bind the selection and stop rules to resume identity
+and keep call order consistent across prepared ranks.
 
 ## State, failures and validation
 
