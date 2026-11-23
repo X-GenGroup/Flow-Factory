@@ -35,6 +35,7 @@ from .dmd2 import DMD2TrainingArguments
 from .dpo import DPOTrainingArguments
 from .dppo import DPPOTrainingArguments
 from .draft import DRaFTTrainingArguments
+from .drtune import DRTuneTrainingArguments
 from .grpo import GRPOTrainingArguments
 from .nft import NFTTrainingArguments
 from .offline_dpo import OfflineDPOTrainingArguments
@@ -55,6 +56,7 @@ __all__ = [
     "ARTTrainingArguments",
     "ReFLTrainingArguments",
     "DRaFTTrainingArguments",
+    "DRTuneTrainingArguments",
     "AWMTrainingArguments",
     "DPOTrainingArguments",
     "DGPOTrainingArguments",

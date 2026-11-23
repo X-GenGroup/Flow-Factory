@@ -28,6 +28,7 @@ from .dmd2 import DMD2TrainingArguments
 from .dpo import DPOTrainingArguments
 from .dppo import DPPOTrainingArguments
 from .draft import DRaFTTrainingArguments
+from .drtune import DRTuneTrainingArguments
 from .grpo import GRPOTrainingArguments
 from .nft import NFTTrainingArguments
 from .offline_dpo import OfflineDPOTrainingArguments
@@ -49,6 +50,7 @@ _TRAINING_ARGS_REGISTRY: Dict[str, Type[TrainingArguments]] = {
     "art": ARTTrainingArguments,
     "refl": ReFLTrainingArguments,
     "draft": DRaFTTrainingArguments,
+    "drtune": DRTuneTrainingArguments,
     "awm": AWMTrainingArguments,
     "dgpo": DGPOTrainingArguments,
     "dpo": DPOTrainingArguments,

@@ -157,6 +157,7 @@ acceleration:
 | GRPO           | grpo           | [Flow-GRPO](https://arxiv.org/abs/2505.05470) / [Dance-GRPO](https://arxiv.org/abs/2505.07818) |
 | ReFL           | refl           | [Image, video and AV support](guidance/training/refl.md) |
 | DRaFT-K        | draft          | [SD3.5 Euler ODE recipe and qualification](guidance/training/draft.md) |
+| DRTune         | drtune         | [SD3.5 sparse Euler reward training](guidance/training/drtune.md) |
 | DiffusionART   | art            | [DiffusionART](https://arxiv.org/abs/2610.12572) · [usage](guidance/training/art.md) |
 | DiffusionNFT   | nft            | [DiffusionNFT](https://arxiv.org/abs/2509.16117) |
 | AWM            | awm            | [Advantage Weighted Matching](https://arxiv.org/abs/2509.25050) |
