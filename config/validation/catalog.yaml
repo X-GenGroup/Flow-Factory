@@ -18171,7 +18171,8 @@ cases:
     reward: real
     description: Compare weight placement, decoded images, scores, input and policy gradients, and updates
       with replicated execution. Check uneven native encoder tails on a cold cache, CPU offload,
-      a warm cache with no loaded encoders, and exact resumed next-update parity.
+      a warm cache that skips CUDA encoder loading and sharding, exact checkpoint restoration,
+      and numerical next-update parity.
   artifacts:
   - tests/distributed/test_refl_sharded_preprocessing.py
   - tests/distributed/test_refl_sharded_auxiliary.py
