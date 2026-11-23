@@ -5,8 +5,8 @@ ART merged in [#377](https://github.com/X-GenGroup/Flow-Factory/pull/377) on the
 reward-regression path. Differentiable rewards and ReFL merged in
 [#381](https://github.com/X-GenGroup/Flow-Factory/pull/381) and
 [#382](https://github.com/X-GenGroup/Flow-Factory/pull/382). Flexible component placement and
-DRaFT-K complete the planned v0.6 scope. [P22 DRTune](../milestones/v0.5x-v0.6.md#p22)
-follows v0.6 qualification and precedes [NCCL EP](expert-parallelism.md) implementation.
+DRaFT-K establish the baseline. [P22 DRTune](../milestones/v0.5x-v0.6.md#p22)
+completes the v0.6 algorithm scope before [NCCL EP](expert-parallelism.md) implementation.
 
 ## Separate three decisions
 
