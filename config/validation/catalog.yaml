@@ -18081,3 +18081,25 @@ cases:
     packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
     environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
     model_paths: []
+- id: frozen-auxiliary-fsdp2-gloo
+  covers: [components.frozen_input_gradients]
+  facets: [distributed, model_adapter]
+  owners: [src/flow_factory/models/auxiliary_fsdp.py]
+  command: [python3, -m, pytest, -q, tests/models/test_auxiliary_fsdp.py]
+  fixture: Native tiny VAE and PickScore CLIP towers with real CPU FSDP2 sharding.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Compare decoder output, reward, input derivatives and policy updates with dense
+      execution over repeated iterations including checkpoint recomputation and a detach control.
+  artifacts: [tests/models/test_auxiliary_fsdp.py]
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []

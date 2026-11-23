@@ -9,6 +9,9 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/models/auxiliary_fsdp.py, tests/models/test_auxiliary_fsdp.py]
+    requires: [components.frozen_input_gradients]
+    reason: Real FSDP2 method hooks must preserve frozen decoder and scorer input gradients.
   - paths: [src/flow_factory/hparams/args.py]
     symbols: [Arguments.component_execution_args, Arguments.from_dict]
     requires: [components.execution_policy]

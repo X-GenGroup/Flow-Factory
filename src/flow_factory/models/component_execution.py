@@ -161,9 +161,9 @@ def resolve_component_execution(
 
 
 def validate_component_execution(
-    requests: ComponentExecutionArguments, accelerator: Accelerator
+    config: Arguments, requests: ComponentExecutionArguments, accelerator: Accelerator
 ) -> None:
-    """Reject currently unsupported execution changes before model construction."""
+    """Admit explicit auxiliary placements before model construction."""
     for section in ("model", "rewards", "eval_rewards"):
         for name, policy in getattr(requests, section).items():
             label = f"component_execution.{section}.{name}"
@@ -173,9 +173,53 @@ def validate_component_execution(
                     policy.group_ranks(topology, accelerator.process_index)
                 except ValueError as error:
                     raise ValueError(f"{label}: {error}") from error
-            if policy != _REPLICATED:
+                _validate_sharded_auxiliary(
+                    config, accelerator, topology.model_parallel_size, section, name
+                )
+            if (
+                policy.offload != "inherit"
+                or policy.loading != "inherit"
+                or policy.precision != "inherit"
+            ):
                 raise ValueError(
-                    f"{label} requests {policy!r}. This runtime supports replicated auxiliaries "
-                    "with inherited loading, offload, and precision. FSDP2 and per-component "
+                    f"{label} requests {policy!r}. Use inherited loading, offload, and precision; "
                     "execution overrides require a supported auxiliary preparation path."
                 )
+
+
+def _validate_sharded_auxiliary(
+    config: Arguments, accelerator: Accelerator, model_parallel_size: int, section: str, name: str
+) -> None:
+    label = f"component_execution.{section}.{name}"
+    if (
+        not getattr(accelerator, "is_fsdp2", False)
+        or model_parallel_size != 1
+        or config.training_args.trainer_type != "refl"
+        or config.model_args.model_type.lower() != "sd3-5"
+    ):
+        raise ValueError(
+            f"{label} has no supported auxiliary preparation path. "
+            "FSDP2 auxiliary placement currently requires SD3.5 ReFL with a data-only FSDP2 launch."
+        )
+    if section == "model" and name == "vae":
+        return
+    if section != "rewards":
+        raise ValueError(f"{label} requires an SD3.5 VAE or a synchronous training PickScore")
+    reward = config.reward_args.get_by_name(name)
+    if (
+        reward.reward_model.lower() != "pickscore"
+        or reward.async_reward
+        or str(reward.device) != accelerator.device.type
+        or len(config.data_args.training_datasets) != 1
+    ):
+        raise ValueError(
+            f"{label} requires synchronous PickScore on the launch device and one training source"
+        )
+    eval_rewards = config.eval_reward_args or config.reward_args
+    if config.data_args.eval_datasets and any(
+        candidate.get_identity_key() == reward.get_identity_key() for candidate in eval_rewards
+    ):
+        raise ValueError(
+            f"{label} shares its sharded scorer with evaluation. "
+            "Configure a distinct replicated evaluation scorer."
+        )

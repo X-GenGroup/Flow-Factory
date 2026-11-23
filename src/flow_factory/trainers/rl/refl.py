@@ -21,6 +21,7 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 
 from ...contracts.execution import DIFFERENTIABLE_REWARD_EXECUTION_CONTRACT
+from ...models.auxiliary_fsdp import prepare_reward_gradient_auxiliaries
 from ...models.model_bundle import composed_forward
 from ...models.trajectory_bridge import resolve_replay_projection_times
 from ...models.trajectory_bridge.masks import _expand_active_mask
@@ -70,6 +71,7 @@ class ReFLTrainer(BaseTrainer):
         super()._initialize_snapshots()
         for name in self.adapter.differentiable_decode_modules:
             self.adapter._require_component(name).eval().requires_grad_(False)
+        self._sharded_auxiliaries = prepare_reward_gradient_auxiliaries(self)
 
     def runtime_execution_identity_payload(self) -> dict:
         """Bind resolved scorer revisions and preprocessing to drained continuation."""
@@ -94,6 +96,8 @@ class ReFLTrainer(BaseTrainer):
         identity["differentiable_scorers"] = scorers
         identity["differentiable_decode_fields"] = self.adapter.differentiable_decode_fields
         identity["replay_step_scope"] = "world"
+        if getattr(self, "_sharded_auxiliaries", ()):
+            identity["sharded_auxiliaries"] = self._sharded_auxiliaries
         return identity
 
     def sample(self) -> list[BaseSample]:
