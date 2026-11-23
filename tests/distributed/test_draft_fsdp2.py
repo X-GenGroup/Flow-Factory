@@ -67,6 +67,7 @@ def _check_endpoint(trainer):
 def _worker(rank, store, output, options):
     os.environ.update(
         ACCELERATE_USE_CPU="false",
+        CUBLAS_WORKSPACE_CONFIG=":4096:8",
         FSDP_VERSION="2",
         FSDP_AUTO_WRAP_POLICY="TRANSFORMER_BASED_WRAP",
         FSDP_TRANSFORMER_CLS_TO_WRAP="JointTransformerBlock",
@@ -78,6 +79,7 @@ def _worker(rank, store, output, options):
     output = Path(output)
     trainer = None
     try:
+        torch.use_deterministic_algorithms(True)
         initialize_cuda(rank, store, world_size=2)
         trainer = load_trainer(
             _fsdp_config(Path(options["fixture"]), output / "saves", options.get("resume"))
@@ -88,6 +90,8 @@ def _worker(rank, store, output, options):
         assert trainer.accelerator.state.fsdp_plugin.activation_checkpointing
         if not options.get("resume"):
             _check_endpoint(trainer)
+            # The inference probe may leave unsharded views on the prepared root.
+            trainer.adapter.component_variant_registry.prepare_parameter_write()
         observations = {"updates": [], "backward_losses": [], "latent_gradients": [], "scores": []}
         decode, save = trainer.adapter.decode_differentiable_state, trainer.save_checkpoint
         saving = False
