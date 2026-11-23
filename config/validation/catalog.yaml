@@ -18312,8 +18312,8 @@ cases:
   oracle:
     kind: numerical
     reward: varying
-    description: Check early sparse gradients, detached-input and live-state controls, native endpoint,
-      frozen auxiliary isolation, exact next-update continuation and rank-consistent DDP masks.
+    description: Check sparse gradients with selected and unselected projection predictions, detached-input
+      and live-state controls, endpoint parity, frozen auxiliaries, and exact resumed stops, masks and updates.
   artifacts:
   - tests/trainers/test_drtune.py
   - tests/distributed/test_drtune_training.py
@@ -18324,7 +18324,7 @@ cases:
   - tests/distributed/sd35_cp_fixture.py
   - tests/distributed/refl_reward.py
   - examples/drtune/lora/sd3_5/pickscore.yaml
-  cost_seconds: 35
+  cost_seconds: 70
   resources:
     gpus: 0
     packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
@@ -18343,8 +18343,8 @@ cases:
   oracle:
     kind: numerical
     reward: varying
-    description: Check equal sparse masks, nonzero policy gradients, frozen auxiliaries and exact
-      replica parameter agreement after accumulated updates.
+    description: Check rank-consistent stops and sparse masks for both full and early endpoints,
+      nonzero policy gradients, frozen auxiliaries and exact replica agreement after accumulated updates.
   artifacts:
   - tests/distributed/test_drtune_training.py
   - tests/distributed/test_draft_training.py
@@ -18354,7 +18354,37 @@ cases:
   - tests/distributed/sd35_cp_fixture.py
   - tests/distributed/refl_reward.py
   - examples/drtune/lora/sd3_5/pickscore.yaml
-  cost_seconds: 40
+  cost_seconds: 70
+  resources:
+    gpus: 2
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1'}
+    model_paths: []
+- id: drtune-sd35-fsdp2
+  covers: [algorithm.drtune.fsdp2]
+  facets: [objective, model_adapter, distributed, runtime_state]
+  owners: [src/flow_factory/trainers/rl/drtune.py, src/flow_factory/trainers/common/euler_reward.py]
+  command: [python3, -m, pytest, -q, -s, tests/distributed/test_drtune_training.py::test_native_sd35_drtune_cuda_fsdp2]
+  fixture: Native tiny SD3.5 BF16, data-only FSDP2 activation checkpointing and a tensor image reward.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 1, dp_shard: 2, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Verify same-order early projection, varying frozen rewards, finite nonzero sharded gradients,
+      exact continued masks and gradients, and matching final replica parameters after resume.
+  artifacts:
+  - tests/distributed/test_drtune_training.py
+  - tests/distributed/test_draft_training.py
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/conftest.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - examples/drtune/lora/sd3_5/pickscore.yaml
+  cost_seconds: 75
   resources:
     gpus: 2
     packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]

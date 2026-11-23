@@ -45,7 +45,8 @@ jobs:
       - name: Install the wheel into a clean runtime
         run: |
           python -m venv "$RUNNER_TEMP/runtime"
-          "$RUNNER_TEMP/runtime/bin/pip" install torch==2.10.0 torchvision==0.25.0 torchaudio==2.10.0 \
+          "$RUNNER_TEMP/runtime/bin/pip" install -c docker/docker-cuda/constraints.txt \
+            torch torchvision torchaudio torchcodec \
             --index-url https://download.pytorch.org/whl/cpu
           "$RUNNER_TEMP/runtime/bin/pip" install -c docker/docker-cuda/constraints.txt dist/*.whl
           "$RUNNER_TEMP/runtime/bin/pip" check

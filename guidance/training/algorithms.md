@@ -1089,7 +1089,8 @@ for the SD3.5 recipe and validation scope.
 
 ## DRTune
 
-DRTune evaluates a differentiable reward on the native Euler endpoint. It retains
+DRTune evaluates a differentiable reward on the native Euler endpoint or a
+clean estimate projected from an earlier stop. It retains
 parameter gradients for equally spaced denoiser predictions with detached inputs,
 while Euler updates carry the live state across every visited step. See the
 [DRTune guide](drtune.md) for the SD3.5 recipe and validation scope.
