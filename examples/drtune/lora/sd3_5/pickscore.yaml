@@ -34,6 +34,7 @@ train:
   enable_gradient_checkpointing: true
   latent_storage_dtype: float32
   drtune_backprop_steps: 2
+  drtune_stop_step_range: [32, 36]
   ema_decay: 0.0
   seed: 42
 scheduler:

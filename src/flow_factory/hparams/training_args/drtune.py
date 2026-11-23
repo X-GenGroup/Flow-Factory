@@ -38,6 +38,12 @@ class DRTuneTrainingArguments(TrainingArguments):
             "help": "Number of equally spaced Euler denoiser predictions with parameter gradients."
         },
     )
+    drtune_stop_step_range: tuple[int, int] | None = field(
+        default=None,
+        metadata={
+            "help": "Inclusive range of visited Euler prediction counts for clean projection."
+        },
+    )
 
     def validate_configuration(self, args: "Arguments") -> None:
         """Validate the first SD3.5 Euler ODE composition before loading."""
@@ -45,6 +51,18 @@ class DRTuneTrainingArguments(TrainingArguments):
         if type(steps) is not int or not 1 <= steps <= self.num_inference_steps:
             raise ValueError(
                 f"drtune_backprop_steps must be in [1, {self.num_inference_steps}], received {steps!r}"
+            )
+        stop = self.drtune_stop_step_range
+        if stop is not None and (
+            not isinstance(stop, (tuple, list))
+            or len(stop) != 2
+            or any(type(count) is not int for count in stop)
+            or not steps <= stop[0] <= stop[1] <= self.num_inference_steps
+        ):
+            raise ValueError(
+                "drtune_stop_step_range must contain two inclusive prediction counts "
+                f"with {steps} <= minimum <= maximum <= {self.num_inference_steps}, "
+                f"received {stop!r}"
             )
         if args.scheduler_args.dynamics_type != "ODE":
             raise ValueError("DRTune requires scheduler.dynamics_type='ODE'")

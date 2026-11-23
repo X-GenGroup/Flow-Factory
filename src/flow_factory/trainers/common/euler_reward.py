@@ -24,6 +24,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel
 
 from ...models.model_bundle import composed_forward
+from ...models.trajectory_bridge import resolve_replay_projection_times
 from ...samples import BaseSample, ComponentTimes, LatentState, StackedSampleBatch
 from .forward_kwargs import replay_forward_kwargs
 from .reward_gradient import reward_source_names
@@ -51,15 +52,25 @@ def sample_euler_endpoint(
     initial = batch["all_latents"][:, 0]
     kwargs = replay_forward_kwargs(trainer, batch)
 
-    def advance(state, current, following, *, prediction_gradients="full"):
+    def advance(state, current, following, *, prediction_gradients="full", project_clean=False):
+        latent = LatentState({"latent": state})
+        times = ComponentTimes(timestep={"latent": current}, next_timestep={"latent": following})
         result = trainer.adapter.forward_state(
             batch=batch,
-            state=LatentState({"latent": state}),
-            times=ComponentTimes(timestep={"latent": current}, next_timestep={"latent": following}),
+            state=latent,
+            times=times,
             compute_log_prob=False,
-            return_fields=("next_latents",),
+            return_fields=("velocity",) if project_clean else ("next_latents",),
             **{**kwargs, "prediction_gradients": prediction_gradients},
         )
+        if project_clean:
+            projection_times = resolve_replay_projection_times(
+                trainer.adapter, times.per_sample(latent.batch_size), batch=batch
+            )
+            clean = trainer.adapter.project_velocity_to_clean_state(
+                latent, projection_times, result.velocity
+            )
+            return clean.components["latent"]
         return trainer.adapter.cast_latents(
             result.next_state.components["latent"], default_dtype=initial.dtype
         )
@@ -78,7 +89,7 @@ def sample_euler_endpoint(
 def optimize_euler_reward(
     trainer: BaseTrainer,
     samples: list[BaseSample],
-    sample_endpoint: Callable[[StackedSampleBatch, int, int], LatentState],
+    sample_endpoint: Callable[[StackedSampleBatch, int, int], tuple[LatentState, dict[str, int]]],
 ) -> None:
     """Optimize one terminal reward graph per accumulated microbatch."""
     loss_info = defaultdict(list)
@@ -90,7 +101,7 @@ def optimize_euler_reward(
         ):
             with trainer.accumulate_gradients():
                 with trainer.autocast():
-                    endpoint = sample_endpoint(batch, inner_epoch, batch_index)
+                    endpoint, sampling_metrics = sample_endpoint(batch, inner_epoch, batch_index)
                     media = trainer.adapter.decode_differentiable_state(endpoint, batch=batch)
                 feedback = trainer.differentiable_feedback(
                     prompt=list(batch["prompt"]),
@@ -103,6 +114,8 @@ def optimize_euler_reward(
                     loss_info[f"reward/{name}"].append(scores.detach().mean())
                 loss = torch.stack(terms).sum()
                 loss_info["loss"].append(loss.detach())
+                for name, value in sampling_metrics.items():
+                    loss_info[name].append(loss.new_tensor(value, dtype=torch.float32))
                 trainer._backward_full_output_loss(loss)
                 trainer.log_train_samples(batch.samples, media=media, rewards=feedback.scores)
                 if trainer.accelerator.sync_gradients:

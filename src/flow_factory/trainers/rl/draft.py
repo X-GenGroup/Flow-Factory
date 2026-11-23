@@ -97,5 +97,7 @@ class DRaFTTrainer(BaseTrainer):
     def optimize(self, samples: list[BaseSample]) -> None:
         """Differentiate one complete suffix and reward per accumulated microstep."""
         optimize_euler_reward(
-            self, samples, lambda batch, _inner_epoch, _batch_index: self._sample_endpoint(batch)
+            self,
+            samples,
+            lambda batch, _inner_epoch, _batch_index: (self._sample_endpoint(batch), {}),
         )
