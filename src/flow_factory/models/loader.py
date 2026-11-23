@@ -20,6 +20,11 @@ from accelerate import Accelerator
 from ..hparams import Arguments
 from ..utils.logger_utils import setup_logger
 from .abc import BaseAdapter
+from .component_execution import (
+    resolve_component_execution,
+    resolve_reward_execution,
+    validate_component_execution,
+)
 from .registry import get_model_adapter_class, list_registered_models
 
 logger = setup_logger(__name__)
@@ -39,6 +44,7 @@ def load_model(config: Arguments, accelerator: Accelerator) -> BaseAdapter:
 
     Raises:
         ImportError: If the model type is not registered or cannot be imported.
+        ValueError: If an explicit auxiliary policy cannot be applied.
 
     Example:
         # Using built-in model
@@ -51,6 +57,10 @@ def load_model(config: Arguments, accelerator: Accelerator) -> BaseAdapter:
     """
 
     model_type = config.model_args.model_type
+    requests = config.component_execution_args
+    if requests is not None:
+        reward_execution = resolve_reward_execution(config, requests)
+        validate_component_execution(requests, accelerator)
 
     logger.info(f"Loading model architecture: {model_type}...")
 
@@ -60,6 +70,10 @@ def load_model(config: Arguments, accelerator: Accelerator) -> BaseAdapter:
 
         # Instantiate adapter
         adapter = adapter_class(config=config, accelerator=accelerator)
+        if requests is not None:
+            adapter.component_execution_plan = resolve_component_execution(
+                config, adapter, requests, reward_execution
+            )
 
         logger.info(f"Successfully loaded {adapter_class.__name__}")
         return adapter

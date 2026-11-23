@@ -40,6 +40,37 @@ Ref2VA LoRA canary, DP2×TP2 preparation fell to 30.98 GiB and the native-step p
 Those numbers are specific to that model revision, geometry and precision; they are not a general
 limit for H3 training or a throughput claim.
 
+## Auxiliary component execution
+
+The optional `component_execution` block names frozen components whose placement you want to
+declare explicitly. Omit it to use the existing defaults. For example, with a model that
+declares `vae` and a training scorer named `alignment`:
+
+```yaml
+component_execution:
+  model:
+    vae:
+      placement: replicated
+  rewards:
+    alignment:
+      placement: replicated
+```
+
+`model` accepts the adapter's component names and groups such as `text_encoders`.
+`rewards` and `eval_rewards` select scorer names from their corresponding configuration
+sections. When evaluation reuses the training scorers, its selectors use the training names.
+Aliases that share one physical component also share its policy. Reward identity is resolved
+before loading, and model aliases resolve as soon as the adapter exposes its component
+declarations, before distributed preparation. Conflicting requests fail validation. The existing
+backend owns trainable roots, including auxiliaries located inside those roots.
+
+This version admits `placement: replicated` with inherited offload, loading and precision.
+Model dtype settings and `rewards[*].dtype` continue to determine precision. The parser can
+describe a future `fsdp2` request on the existing logical `data` scope. The training entry
+rejects requests that need auxiliary sharding or explicit execution overrides before
+constructing the model. Replication adds no mesh dimension and preserves cache and checkpoint
+compatibility. ReFL still differentiates through the inputs of frozen decoders and scorers.
+
 ## Choosing a resume mode
 
 | Intent | Required compatibility |

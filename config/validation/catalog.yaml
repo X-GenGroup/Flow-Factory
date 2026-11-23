@@ -18056,3 +18056,28 @@ cases:
       OMP_NUM_THREADS: '1'
       MKL_NUM_THREADS: '1'
     model_paths: []
+- id: component-execution-policy
+  covers: [components.execution_policy]
+  facets: [model_adapter]
+  owners:
+  - src/flow_factory/hparams/component_execution.py
+  - src/flow_factory/models/component_execution.py
+  - src/flow_factory/models/loader.py
+  command: [python3, -m, pytest, -q, tests/models/test_component_execution.py]
+  fixture: Parsed ReFL configuration and CPU fixtures for native model aliases and reward deduplication.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: Preserve default backend delegation and configuration identity. Resolve shared physical
+      roots, gradient requirements and existing data groups. Reject unsupported policies before loading.
+  artifacts: [tests/models/test_component_execution.py]
+  cost_seconds: 10
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []

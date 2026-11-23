@@ -41,6 +41,7 @@ from ..utils.dist import get_world_size
 from ..utils.logger_utils import setup_logger
 from .abc import ArgABC
 from .acceleration_args import AccelerationArguments
+from .component_execution import ComponentExecutionArguments
 from .data_args import DataArguments
 from .log_args import LogArguments
 from .model_args import ModelArguments
@@ -184,6 +185,10 @@ class Arguments(ArgABC):
     optimizer_args: MultiOptimizerArguments = field(
         default_factory=MultiOptimizerArguments,
         metadata={"help": "Arguments for one optimizer per trainable variant."},
+    )
+    component_execution_args: ComponentExecutionArguments | None = field(
+        default=None,
+        metadata={"help": "Execution policy for frozen auxiliary components."},
     )
 
     def _synthesize_default_optimizer_args(self) -> None:
@@ -1335,6 +1340,7 @@ class Arguments(ArgABC):
             "optimizers": ("optimizer_args", MultiOptimizerArguments),
             "rewards": ("reward_args", MultiRewardArguments),
             "eval_rewards": ("eval_reward_args", MultiRewardArguments),
+            "component_execution": ("component_execution_args", ComponentExecutionArguments),
         }
 
         # 3. Build init kwargs
@@ -1345,6 +1351,8 @@ class Arguments(ArgABC):
 
         for k, v in args_dict.items():
             if k in nested_map:
+                if k == "component_execution" and v is None:
+                    continue
                 arg_name, arg_cls = nested_map[k]
                 init_kwargs[arg_name] = arg_cls.from_dict(v)
 
