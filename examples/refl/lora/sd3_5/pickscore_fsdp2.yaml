@@ -22,6 +22,7 @@ model:
   component_load_dtypes: float32
   trainable_parameters_dtype: float32
 data:
+  force_reprocess: false
   enable_preprocess: true
   preprocess_parallelism: global
   datasets:
