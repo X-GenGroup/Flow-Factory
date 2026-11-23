@@ -18242,3 +18242,60 @@ cases:
     packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
     environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1'}
     model_paths: []
+- id: draft-k-fsdp2-admission
+  covers: [algorithm.draft.fsdp2_admission]
+  facets: [objective, model_adapter]
+  owners: [src/flow_factory/hparams/training_args/draft.py]
+  command: [python3, -m, pytest, -q, tests/distributed/test_draft_fsdp2.py::test_draft_fsdp_config_admission]
+  fixture: The actual two-rank SD3.5 DRaFT-K FSDP2 recipe used by the CUDA test.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    reward: none
+    description: Resolve two data shards, activation checkpointing, K=2 and replicated auxiliaries.
+  artifacts:
+  - tests/distributed/test_draft_fsdp2.py
+  - tests/distributed/test_draft_training.py
+  - examples/draft/lora/sd3_5/pickscore.yaml
+  cost_seconds: 5
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []
+- id: draft-k-sd35-fsdp2
+  covers: [algorithm.draft.fsdp2]
+  facets: [objective, distributed, model_adapter]
+  owners: [src/flow_factory/trainers/rl/draft.py]
+  command: [python3, -m, pytest, -q, -s, tests/distributed/test_draft_fsdp2.py::test_cuda_sd35_draft_fsdp2_suffix_and_resume]
+  fixture: Native tiny SD3.5 Euler sampling, K=2 of three steps, tensor pixel reward and activation checkpointing.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 1, dp_shard: 2, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: varying
+    description: Compare matched native Euler endpoints, verify nonzero terminal and policy derivatives
+      while auxiliary weights remain frozen, and compare resumed gradients and updates exactly.
+  artifacts:
+  - tests/distributed/test_draft_fsdp2.py
+  - tests/distributed/test_draft_training.py
+  - tests/distributed/test_refl_training.py
+  - tests/distributed/conftest.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/refl_reward.py
+  - examples/draft/lora/sd3_5/pickscore.yaml
+  cost_seconds: 90
+  resources:
+    gpus: 2
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1'}
+    model_paths: []
