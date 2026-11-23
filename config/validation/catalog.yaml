@@ -18190,3 +18190,55 @@ cases:
     packages: [torch, pytest, transformers, diffusers, accelerate, peft, av]
     environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', FF_TEST_REAL_REWARD: '1', HF_HUB_OFFLINE: '1'}
     model_paths: [yuvalkirstain/PickScore_v1, laion/CLIP-ViT-H-14-laion2B-s32B-b79K]
+- id: draft-k-cpu
+  covers: [algorithm.draft.contracts]
+  facets: [objective, model_adapter]
+  owners: [src/flow_factory/trainers/rl/draft.py, src/flow_factory/hparams/training_args/draft.py]
+  command: [python3, -m, pytest, -q, tests/trainers/test_draft.py, tests/distributed/test_draft_training.py, -k, 'not cuda']
+  fixture: Independent Euler suffix reference and native tiny SD3.5 with a tensor image reward.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: gloo
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Check suffix entry and policy derivatives, native sampling endpoint, frozen auxiliaries,
+      exact next-update continuation and native two-rank DDP updates.
+  artifacts:
+    - tests/trainers/test_draft.py
+    - tests/distributed/test_draft_training.py
+    - tests/distributed/test_refl_training.py
+    - tests/distributed/sd35_cp_fixture.py
+    - tests/distributed/refl_reward.py
+  cost_seconds: 30
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []
+- id: draft-k-sd35-ddp
+  covers: [algorithm.draft.ddp]
+  facets: [objective, distributed, model_adapter]
+  owners: [src/flow_factory/trainers/rl/draft.py]
+  command: [python3, -m, pytest, -q, tests/distributed/test_draft_training.py::test_native_sd35_draft_cuda_ddp]
+  fixture: Native tiny SD3.5 and a differentiable tensor image reward on two CUDA ranks.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: ddp
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 2, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Check repeated prepared suffix updates and exact replica parameter agreement.
+  artifacts:
+    - tests/distributed/test_draft_training.py
+    - tests/distributed/test_refl_training.py
+    - tests/distributed/sd35_cp_fixture.py
+    - tests/distributed/refl_reward.py
+  cost_seconds: 30
+  resources:
+    gpus: 2
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
+    environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1'}
+    model_paths: []

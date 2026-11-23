@@ -9,6 +9,13 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/hparams/training_args/draft.py, src/flow_factory/trainers/rl/draft.py,
+            examples/draft/**, tests/trainers/test_draft.py, tests/distributed/test_draft_training.py]
+    requires: [algorithm.draft.contracts, algorithm.draft.ddp]
+    reason: Verify the independent suffix derivative, the native endpoint, and prepared policy updates.
+  - paths: [src/flow_factory/trainers/common/reward_gradient.py]
+    requires: [algorithm.draft.contracts, algorithm.refl.contracts]
+    reason: Both differentiable trainers resolve reward sources and scorer identities through this owner.
   - paths: [tests/data_utils/test_sharded_preprocessing.py]
     requires: [components.sharded_preprocessing]
     reason: Coordinated cache misses and tail calls need real sharded encoder execution on two CPU ranks.
