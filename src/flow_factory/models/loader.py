@@ -60,7 +60,7 @@ def load_model(config: Arguments, accelerator: Accelerator) -> BaseAdapter:
     requests = config.component_execution_args
     if requests is not None:
         reward_execution = resolve_reward_execution(config, requests)
-        validate_component_execution(requests, accelerator)
+        validate_component_execution(config, requests, accelerator)
 
     logger.info(f"Loading model architecture: {model_type}...")
 

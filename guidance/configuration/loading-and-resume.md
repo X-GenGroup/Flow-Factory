@@ -64,12 +64,17 @@ before loading, and model aliases resolve as soon as the adapter exposes its com
 declarations, before distributed preparation. Conflicting requests fail validation. The existing
 backend owns trainable roots, including auxiliaries located inside those roots.
 
-This version admits `placement: replicated` with inherited offload, loading and precision.
-Model dtype settings and `rewards[*].dtype` continue to determine precision. The parser can
-describe a future `fsdp2` request on the existing logical `data` scope. The training entry
-rejects requests that need auxiliary sharding or explicit execution overrides before
-constructing the model. Replication adds no mesh dimension and preserves cache and checkpoint
-compatibility. ReFL still differentiates through the inputs of frozen decoders and scorers.
+Replicated auxiliaries inherit offload, loading and precision. Model dtype settings and
+`rewards[*].dtype` continue to determine precision. Explicit replication preserves cache and
+checkpoint compatibility.
+
+SD3.5 ReFL admits `placement: fsdp2` with `shard_group: data` for its VAE and synchronous
+training PickScore. Use a data-only FSDP2 launch and one training source for sharded scoring.
+When evaluation is enabled, configure a distinct replicated scorer. CLIP towers and projections
+are sharded, and the scalar score scale stays replicated. The VAE's native `decode` enters the
+FSDP2 forward lifecycle, including backward recomputation. Sharded auxiliaries remain frozen
+and outside the optimizer. Exact-state continuation records the sharded component policy.
+Auxiliary preparation inherits loading, offload and precision and uses existing ranks.
 
 ## Choosing a resume mode
 
