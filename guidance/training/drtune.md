@@ -61,3 +61,22 @@ The supported composition uses SD3.5, Euler ODE, local, data-only DDP or FSDP2
 policy execution, and replicated auxiliaries. See the
 [DRTune roadmap](../../roadmap/milestones/v0.5x-v0.6.md#p22) for the selected
 gradient, continuation and GPU qualification cases.
+
+### SD3.5 Medium timing
+
+The following measurements use one NVIDIA L20Y with Torch 2.11.0, native SD3.5
+Medium and PickScore, 512 × 512 images, batch size 1, rank-16 LoRA, BF16 and
+activation checkpointing. All three conditions use the same initial sample
+and T=40, K=2. Step time includes sampling, decoding, scoring, backward and the
+optimizer update. The median timing and maximum allocated memory are taken
+over three measured steps after two warm-up steps.
+
+| Objective | Denoiser calls | Median step | Peak allocated |
+| --- | ---: | ---: | ---: |
+| DRaFT-K | 40 | 2.44 s | 18.88 GiB |
+| DRTune, full endpoint | 40 | 2.66 s | 18.88 GiB |
+| DRTune, early projection | 35 | 2.18 s | 18.88 GiB |
+
+In this workload, shortening the visited prefix saved five forward calls.
+All three runs differentiated two predictions and reached the same peak
+allocated memory with checkpointing enabled.
