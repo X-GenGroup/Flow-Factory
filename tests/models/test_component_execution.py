@@ -32,6 +32,7 @@ from flow_factory.models.component_execution import (
     OptimizationGradients,
     resolve_component_execution,
     resolve_reward_execution,
+    validate_component_execution,
 )
 from flow_factory.models.runtime import ClassicPipelineRuntime, PseudoPipelineRuntime
 from flow_factory.rewards.loader import MultiRewardLoader
@@ -263,3 +264,52 @@ def test_pending_execution_preference_does_not_silently_fall_back(monkeypatch, p
     monkeypatch.setattr(loader, "get_model_adapter_class", lambda _: pytest.fail("unexpected load"))
     with pytest.raises(ValueError, match="component_execution.model.vae.*inherited loading"):
         loader.load_model(config, SimpleNamespace())
+
+
+def test_sharded_refl_recipe_resolves_independent_stage_owners(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    config = Arguments.load_from_yaml("examples/refl/lora/sd3_5/pickscore_fsdp2.yaml")
+    requests = config.component_execution_args
+    topology = config.parallelism_args.resolve_topology(config.num_processes)
+    assert topology.dimensions == dict(dp_replicate_size=1, dp_shard_size=2, tp_size=1, cp_size=1)
+    assert config.eval_args.eval_freq == 0
+    assert len(config.data_args.training_datasets) == 1
+    assert config.scheduler_args.dynamics_type == "ODE"
+    assert config.training_args.get_num_train_timesteps(config) == 1
+
+    monkeypatch.setattr(
+        "flow_factory.models.component_execution.parallel_topology", lambda _: topology
+    )
+    for rank in range(2):
+        accelerator = SimpleNamespace(
+            is_fsdp2=True, process_index=rank, device=torch.device("cuda")
+        )
+        validate_component_execution(config, requests, accelerator)
+        assert requests.model["vae"].group_ranks(topology, rank) == (0, 1)
+    with pytest.raises(ValueError, match="data-only FSDP2"):
+        validate_component_execution(
+            config, requests, SimpleNamespace(is_fsdp2=False, process_index=0)
+        )
+
+    roots = ("transformer", "vae", "text_encoder", "text_encoder_2", "text_encoder_3")
+    modules = {name: torch.nn.Linear(2, 2) for name in roots}
+    runtime = ClassicPipelineRuntime(SimpleNamespace(components=modules, **modules))
+    adapter = SimpleNamespace(
+        component_runtime=runtime,
+        model_args=config.model_args,
+        differentiable_decode_modules=("vae",),
+        _resolve_component_names=runtime.resolve_component_names,
+    )
+    rewards = resolve_reward_execution(config, requests)
+    plan = resolve_component_execution(config, adapter, requests, rewards)
+    assert plan.model["transformer"].policy is None
+    assert plan.model["transformer"].optimization_gradients is OptimizationGradients.PARAMETERS
+    assert plan.model["vae"].optimization_gradients is OptimizationGradients.INPUT
+    assert all(
+        plan.model[name].optimization_gradients is OptimizationGradients.NONE for name in roots[2:]
+    )
+    assert all(plan.model[name].policy.placement == "fsdp2" for name in roots[1:])
+    assert len(plan.rewards) == 1
+    scorer = next(iter(plan.rewards.values()))
+    assert scorer.policy.placement == "fsdp2"
+    assert scorer.optimization_gradients is OptimizationGradients.INPUT

@@ -291,6 +291,68 @@ def test_native_autocast_routes_keep_unknown_changes_conservative(
         assert fallback in broad
 
 
+@pytest.mark.parametrize(
+    ("path", "symbols", "required", "excluded", "broader"),
+    [
+        (
+            "src/flow_factory/trainers/rl/refl.py",
+            [
+                "<module>",
+                "ReFLTrainer._initialize_snapshots",
+                "ReFLTrainer.runtime_execution_identity_payload",
+            ],
+            "components.refl_frozen_fsdp2",
+            "algorithm.refl.joint_tp_cp",
+            "ReFLTrainer.optimize",
+        ),
+        (
+            "src/flow_factory/trainers/rl/refl.py",
+            ["<module>", "ReFLTrainer._init_dataloader"],
+            "components.refl_joint_auxiliary_fsdp2",
+            "algorithm.refl.joint_tp_cp",
+            "ReFLTrainer.optimize",
+        ),
+        (
+            "src/flow_factory/trainers/rl/refl.py",
+            [
+                "<module>",
+                "ReFLTrainer._reward_source_names",
+                "ReFLTrainer.runtime_execution_identity_payload",
+            ],
+            "algorithm.refl.contracts",
+            "algorithm.refl.joint_tp_cp",
+            "ReFLTrainer.optimize",
+        ),
+        (
+            "src/flow_factory/models/stable_diffusion/sd3_5.py",
+            ["SD3_5Adapter.inference"],
+            "model.sd35.lifecycle",
+            "model.sd35.cp_reference",
+            "SD3_5Adapter.forward",
+        ),
+    ],
+)
+def test_auxiliary_and_draft_routes_keep_their_broader_fallback(
+    path, symbols, required, excluded, broader
+):
+    import yaml
+
+    policy = yaml.safe_load((planner.ROOT / planner.POLICY).read_text())
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "scope_complete": True,
+        "docs_only_paths": [],
+        "semantic_symbols": {path: symbols},
+    }
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert required in obligations
+    assert excluded not in obligations
+    scope["semantic_symbols"][path] = [*symbols, broader]
+    obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+    assert excluded in obligations
+
+
 def test_reviewed_leaf_helper_keeps_direct_cases_and_unknown_edits_broad():
     import yaml
 

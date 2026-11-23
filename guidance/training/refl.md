@@ -127,3 +127,17 @@ checks establish functional support. Pretrained policy quality is measured by a 
 
 Image-conditioned preprocessing uses cache format version 3 to retain Hugging Face
 Image metadata on a single rank. Earlier preprocessing caches are rebuilt automatically.
+
+## Sharded auxiliaries
+
+The [two-rank FSDP2 recipe](../../examples/refl/lora/sd3_5/pickscore_fsdp2.yaml)
+opts into sharding the SD3.5 text encoders during preprocessing and the frozen
+VAE and PickScore during optimization. Set the prompt dataset path and use a
+cache directory visible to both ranks. With `force_reprocess: false`, cache
+hits skip encoder CUDA loading and sharding. The native SD3.5 pipeline can
+retain CPU encoder modules. Evaluation is disabled in this recipe. Enable
+it with a separate replicated scorer identity.
+
+See [component execution](../configuration/loading-and-resume.md#auxiliary-component-execution)
+for placement and checkpoint requirements. The [v0.6 qualification plan](../../roadmap/milestones/v0.5x-v0.6.md#p21c)
+records the remaining CUDA checks for this recipe.
