@@ -719,7 +719,9 @@ class NEOChatModel(PreTrainedModel):
         v_pred = (x_pred - z) / (1 - t).clamp_min(self.config.t_eps)
         return v_pred
 
-    def _build_it2i_inputs(self, tokenizer, query, pixel_values=None, grid_hw=None):
+    def _build_it2i_inputs(
+        self, tokenizer, query, pixel_values=None, grid_hw=None, discard_visual_embeddings=False
+    ):
         model_inputs = tokenizer(query, return_tensors="pt")
         input_ids = model_inputs["input_ids"].to(self.device)
 
@@ -731,6 +733,10 @@ class NEOChatModel(PreTrainedModel):
         B, N, C = input_embeds.shape
         if pixel_values is not None:
             vit_embeds = self.extract_feature(pixel_values, grid_hw=grid_hw)
+            if discard_visual_embeddings:
+                # The native unconditional edit prefix has no visual tokens. Under
+                # FSDP every rank still executes the same vision parameter gathers.
+                return input_embeds, indexes, attention_mask
             input_embeds = input_embeds.reshape(B * N, C)
             input_ids = input_ids.reshape(B * N)
             selected = input_ids == self.img_context_token_id

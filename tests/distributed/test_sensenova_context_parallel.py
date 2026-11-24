@@ -750,3 +750,72 @@ def test_sensenova_inactive_state_keeps_exact_values_and_empty_optimizer_state(c
         optimizer.state[parameter] = {"step": torch.tensor(1)}
     with pytest.raises(AssertionError):
         _assert_inactive_state(parameters, optimizer, records, {"inactive"})
+
+
+def _sensenova_sft_fsdp_worker(rank, store_path, result_dir, options):
+    from accelerate.utils import DistributedType
+    from sensenova_cp_fixture import (
+        build_denoiser,
+        build_tokenizer,
+        condition_images,
+        make_input_adapter,
+    )
+    from test_model_preparation import initialize_cuda
+    from torch.distributed.fsdp import fully_shard
+
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+
+    try:
+        initialize_cuda(rank, store_path, 2)
+        device = torch.device("cuda", rank)
+        model = build_denoiser().to(device=device, dtype=torch.bfloat16)
+        tok = build_tokenizer(Path(result_dir) / f"tokenizer-{rank}")
+        adapter = make_input_adapter(model, tok, device)
+        adapter.accelerator.num_processes = 2
+        adapter.pipeline.scheduler = FlowMatchEulerDiscreteSDEScheduler(dynamics_type="ODE")
+        adapter.pipeline.scheduler.set_timesteps(2, device=device)
+        # DP0 drops its single reference and all text. DP1 keeps its two ordered
+        # references. Nested vision sharding would hang if DP0 skipped its forward.
+        images = condition_images(rank)[: rank + 1]
+        mask = frozenset(("text", "images")) if rank == 0 else frozenset(("text",))
+        inputs = dict(
+            t=torch.tensor([500.0], device=device),
+            t_next=torch.tensor([0.0], device=device),
+            latents=torch.randn(1, 3, 64, 64, device=device),
+            image_shape=(64, 64),
+            prompt=["Combine the red and blue images."],
+            condition_images=[images],
+            sft_condition_masks=[mask],
+            compute_log_prob=False,
+            return_kwargs=["velocity"],
+            **adapter.offline_training_forward_overrides,
+        )
+        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+            expected = adapter.forward(**inputs).velocity
+        fully_shard(model.model.vision_model)
+        fully_shard(model)
+        adapter.accelerator.distributed_type = DistributedType.FSDP
+        adapter.accelerator.is_fsdp2 = True
+        with torch.autocast("cuda", torch.bfloat16):
+            result = adapter.forward(**inputs).velocity
+        torch.testing.assert_close(result, expected, atol=2e-3, rtol=1e-2)
+        result.float().square().mean().backward()
+        grads = [p.grad.to_local() for p in model.parameters() if p.grad is not None]
+        assert grads and all(g.isfinite().all() for g in grads) and any(g.any() for g in grads)
+        row = {
+            "max_error": float((result - expected).abs().max().detach()),
+            "gradients": len(grads),
+        }
+    except Exception:
+        row = {"error": traceback.format_exc()}
+    finally:
+        Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(row))
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA ranks")
+def test_cuda_sensenova_sft_divergent_dropout_fsdp(tmp_path):
+    rows = run_gloo_ranks(_sensenova_sft_fsdp_worker, tmp_path, 2, {})
+    assert all("error" not in row for row in rows), rows
+    print(json.dumps({"sensenova_sft_fsdp": rows}))

@@ -396,3 +396,139 @@ def test_bagel_lifecycle_config_keeps_native_cfg_without_unsupported_negative_pr
         assert arguments.extra_kwargs["cfg_text_scale"] == 2.0
         assert arguments.extra_kwargs["cfg_img_scale"] == 1.5
     assert config.parallelism_args.sequence_parallel is True
+
+
+def test_bagel_sft_independent_visual_streams(tmp_path, monkeypatch):
+    from accelerate.utils import DistributedType
+    from bagel_cp_fixture import (
+        build_pipeline,
+        build_tokenizer,
+        condition_images,
+        make_input_adapter,
+    )
+
+    from flow_factory.models.bagel.data.data_utils import pil_img2rgb
+    from flow_factory.models.bagel.modeling.bagel import qwen2_navit, siglip_navit
+
+    monkeypatch.setattr(qwen2_navit, "flash_attn_varlen_func", _cpu_flash_reference)
+    monkeypatch.setattr(siglip_navit, "flash_attn_varlen_func", _cpu_flash_reference)
+    pipeline = build_pipeline(heads=4, kv_heads=2, head_dim=16)
+    adapter = make_input_adapter(pipeline, build_tokenizer(tmp_path / "tok"), "cpu")
+    adapter.accelerator.distributed_type = DistributedType.NO
+    images = condition_images(ragged=True)
+    prompts = ["a red image", "a blue small image"]
+    masks = [frozenset(("vit:0", "text")), frozenset(("vae:0", "vae:1"))]
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        context = adapter._build_gen_context(prompts, images, sft_condition_masks=masks)[0]
+        # Independent packed oracle. A dropped visual segment still occupies one
+        # RoPE slot. A missing reference and a dropped caption occupy none.
+        ref = {"kv_lens": [0, 0], "ropes": [0, 0], "past_key_values": qwen2_navit.NaiveCache(2)}
+
+        def convert(image):
+            return adapter.vae_transform.resize_transform(pil_img2rgb(image))
+
+        ref = adapter._update_context_image([convert(images[0][0]), None], ref, vae=True, vit=False)
+        ref["ropes"][1] += 1
+        ref = adapter._update_context_image([None, convert(images[1][0])], ref, vae=False, vit=True)
+        ref["ropes"][0] += 1
+        ref["ropes"][1] += 1
+        ref = adapter._update_context_image([None, convert(images[1][1])], ref, vae=False, vit=True)
+        ref = adapter._update_context_text([None, prompts[1]], ref)
+        assert context["kv_lens"] == ref["kv_lens"]
+        assert context["ropes"] == [2, 4 + 2 + len(adapter.tokenizer.encode(prompts[1]))]
+        for layer in context["past_key_values"].key_cache:
+            torch.testing.assert_close(
+                context["past_key_values"].key_cache[layer], ref["past_key_values"].key_cache[layer]
+            )
+            torch.testing.assert_close(
+                context["past_key_values"].value_cache[layer],
+                ref["past_key_values"].value_cache[layer],
+            )
+
+
+def _bagel_sft_fsdp_worker(rank, store_path, result_dir, options):
+    from accelerate.utils import DistributedType
+    from bagel_cp_fixture import (
+        build_pipeline,
+        build_tokenizer,
+        condition_images,
+        make_input_adapter,
+    )
+    from test_model_preparation import initialize_cuda
+    from torch.distributed.fsdp import fully_shard
+
+    from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
+
+    try:
+        initialize_cuda(rank, store_path, 2)
+        torch.manual_seed(543)
+        device = torch.device("cuda", rank)
+        pipeline = build_pipeline(heads=4, kv_heads=2, head_dim=32)
+        pipeline.bagel.to(device)
+        pipeline.vae.to(device)
+        tok = build_tokenizer(Path(result_dir) / f"tokenizer-{rank}")
+        adapter = make_input_adapter(pipeline, tok, device)
+        adapter.accelerator.distributed_type = DistributedType.NO
+        adapter.accelerator.num_processes = 2
+        pipeline.scheduler = FlowMatchEulerDiscreteSDEScheduler(dynamics_type="ODE")
+        pipeline.scheduler.set_timesteps(2, device=device)
+        prompts = ["a red image", "a blue small image"]
+        images = condition_images(rank, ragged=False)
+        # DP0 omits every prefix token. DP1 retains a different representation
+        # of each reference per row while keeping the original two-sample pack.
+        all_drop = frozenset(("text", "vae:0", "vit:0", "vae:1", "vit:1"))
+        masks = (
+            [all_drop, all_drop]
+            if rank == 0
+            else [frozenset(("vit:0", "text")), frozenset(("vae:1",))]
+        )
+        model = pipeline.bagel
+        width = model.latent_channel * model.latent_patch_size**2
+        inputs = dict(
+            t=torch.full((2,), 500.0, device=device),
+            latents=torch.randn(2, 16, width, device=device),
+            t_next=torch.zeros(2, device=device),
+            image_shape=(64, 64),
+            prompt=prompts,
+            condition_images=images,
+            sft_condition_masks=masks,
+            compute_log_prob=False,
+            return_kwargs=["velocity"],
+            **adapter.offline_training_forward_overrides,
+        )
+        with torch.no_grad(), torch.autocast("cuda", torch.bfloat16):
+            expected = adapter.forward(**inputs).velocity
+        fully_shard(pipeline.transformer)
+        adapter.accelerator.distributed_type = DistributedType.FSDP
+        adapter.accelerator.is_fsdp2 = True
+        with torch.autocast("cuda", torch.bfloat16):
+            result = adapter.forward(**inputs).velocity
+        torch.testing.assert_close(result, expected, atol=2e-3, rtol=1e-2)
+        result.float().square().mean().backward()
+        grads = [p.grad.to_local() for p in pipeline.transformer.parameters() if p.grad is not None]
+        assert grads and all(g.isfinite().all() for g in grads) and any(g.any() for g in grads)
+        # Reject on every rank before entering a sharded model call, including
+        # when one peer has only T2I records or the other peer is locally ragged.
+        for local in (
+            None if rank == 0 else images,
+            images if rank == 0 else [images[0][:1], images[1]],
+        ):
+            with pytest.raises(RuntimeError, match="uniform reference-image count"):
+                adapter._resolve_condition_images_for_packing(local, mixed_sft_tasks=True)
+        row = {
+            "max_error": float((result - expected).abs().max().detach()),
+            "gradients": len(grads),
+        }
+    except Exception:
+        row = {"error": traceback.format_exc()}
+    finally:
+        Path(result_dir, f"rank-{rank}.json").write_text(json.dumps(row))
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA ranks")
+def test_cuda_bagel_sft_divergent_dropout_fsdp(tmp_path):
+    rows = run_gloo_ranks(_bagel_sft_fsdp_worker, tmp_path, 2, {})
+    assert all("error" not in row for row in rows), rows
+    print(json.dumps({"bagel_sft_fsdp": rows}))

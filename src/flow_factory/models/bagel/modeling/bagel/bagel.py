@@ -266,8 +266,17 @@ class Bagel(PreTrainedModel):
             packed_key_value_indexes.extend(range(curr, curr + curr_kvlen))
             curr += curr_kvlen
 
-            text_ids = tokenizer.encode(prompt)
-            text_ids = [new_token_ids["bos_token_id"]] + text_ids + [new_token_ids["eos_token_id"]]
+            # None omits the entire caption segment; an explicitly empty caption
+            # still gets its ordinary BOS/EOS pair.
+            text_ids = (
+                []
+                if prompt is None
+                else [
+                    new_token_ids["bos_token_id"],
+                    *tokenizer.encode(prompt),
+                    new_token_ids["eos_token_id"],
+                ]
+            )
             text_token_lens.append(len(text_ids))
             packed_text_ids.extend(text_ids)
             packed_text_position_ids.extend(

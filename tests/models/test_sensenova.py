@@ -410,3 +410,58 @@ def test_sensenova_inference_callbacks_are_per_sample(
         if trajectory_indices != "all":
             with pytest.raises(ValueError, match="uncollected sentinel"):
                 adapter.get_replay_callback(batch, 1, "velocity")
+
+
+@pytest.mark.parametrize("references", [0, 2], ids=["t2i", "ordered-it2i"])
+def test_sensenova_sft_uses_native_cfg_prefix(monkeypatch, references):
+    model = NEOChatModel(_tiny_config(use_pixel_head=True)).eval()
+    adapter = _TinySenseNovaAdapter.__new__(_TinySenseNovaAdapter)
+    adapter.transformer = SenseNovaDenoiser(model)
+    adapter.tokenizer = _FakeTokenizer()
+
+    def load(image, **kwargs):
+        return torch.full((4, 3 * 16 * 16), image.getpixel((0, 0))[0] / 255.0), torch.tensor(
+            [[2, 2]]
+        )
+
+    monkeypatch.setattr(sensenova_module, "load_image_native", load)
+    images = [Image.new("RGB", (32, 32), (70 * i, 0, 0)) for i in range(references)]
+    # Even an empty positive caption carries a system instruction and thinking
+    # template, both of which the published text-drop branch removes.
+    prompt = ""
+    queries = []
+    native_query = model._build_t2i_query
+
+    def capture(*args, **kwargs):
+        result = native_query(*args, **kwargs)
+        queries.append(result)
+        return result
+
+    monkeypatch.setattr(model, "_build_t2i_query", capture)
+    context = adapter._build_context(prompt, (32, 32), 3.0, 1.5, images)
+    assert "<think>" in queries[0] and "<think>" not in queries[-1]
+    if images:
+        assert "<image><image>" in queries[1] and "<think>" not in queries[1]
+    branches = [(frozenset(), "")]
+    if images:
+        branches.append((frozenset(("text",)), "img_"))
+        branches.append((frozenset(("text", "images")), "uncond_"))
+    else:
+        branches.append((frozenset(("text",)), "uncond_"))
+    try:
+        for mask, branch in branches:
+            selected = adapter._build_context(prompt, (32, 32), 1.0, 1.0, images, mask)
+            try:
+                assert selected["img_past_key_values"] is selected["uncond_past_key_values"] is None
+                torch.testing.assert_close(
+                    selected["indexes_image"], context[branch + "indexes_image"]
+                )
+                for actual, expected in zip(
+                    selected["past_key_values"].layers, context[branch + "past_key_values"].layers
+                ):
+                    torch.testing.assert_close(actual.keys, expected.keys)
+                    torch.testing.assert_close(actual.values, expected.values)
+            finally:
+                adapter._clear_context(selected)
+    finally:
+        adapter._clear_context(context)

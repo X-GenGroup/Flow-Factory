@@ -102,6 +102,7 @@ from ..parallelism.sequence import ColumnParallelRegion
 from ..parallelism.tensor import SharedInputColwiseParallel
 from ..pipeline_contracts import image_output_contract
 from ..runtime import ComponentRuntime, PseudoPipelineRuntime
+from ..sft_recipes import BagelDropout
 from ._output import (
     BagelOutputStateCodec,
     validate_bagel_encoded_output_geometry,
@@ -209,6 +210,8 @@ class BagelAdapter(BaseAdapter):
     sequence_parallel_by_default = False
 
     requires_preserved_replay_batch_composition = True
+
+    sft_condition_dropout_policy = BagelDropout()
 
     offline_training_forward_overrides = MappingProxyType(
         {
@@ -671,7 +674,10 @@ class BagelAdapter(BaseAdapter):
         ]
 
     def _resolve_condition_images_for_packing(
-        self, condition_images: Optional[MultiImageBatch]
+        self,
+        condition_images: Optional[MultiImageBatch],
+        *,
+        mixed_sft_tasks: bool = False,
     ) -> Optional[List[List[Image.Image]]]:
         """Resolve condition images for the packed ``inference()`` / ``forward()`` path.
 
@@ -683,61 +689,35 @@ class BagelAdapter(BaseAdapter):
         """
         cond = self._normalize_condition_images(condition_images)
         if cond is None or not self._is_i2i(cond):
+            if mixed_sft_tasks:
+                self._assert_variable_count_supported([])
             return None
         self._assert_variable_count_supported(cond)
         return cond
 
     def _assert_variable_count_supported(self, condition_images: List[List[Image.Image]]) -> None:
-        """Fail fast on condition-image counts that would deadlock sharded collectives.
+        """Collectively reject unequal reference counts before sharded prefix updates.
 
-        Applies when ``language_model`` is parameter-sharded (FSDP FULL/HYBRID or FSDP2).
-        The prefill (``_build_gen_context``) issues a *data-dependent* number of
-        ``language_model.forward_inference`` calls -- ``2*num_rounds + 2`` where
-        ``num_rounds = max(per-sample count)`` (2 per image round for the VAE and ViT
-        cache updates, plus the final gen / cfg_img text passes). ``language_model`` is
-        the only sharded module (frozen ViT/VAE are not). When params are sharded each
-        call must ``AllGather`` its shard, so a per-forward call count that differs
-        ACROSS ranks mismatches the collective and deadlocks. Two ways this happens:
-          (a) variable counts WITHIN a rank's batch, and
-          (b) locally-uniform counts that differ ACROSS ranks (different ``num_rounds``).
-        DDP / DeepSpeed ZeRO-1/2 replicate params (forward is collective-free; gradients
-        sync a fixed number of times at backward), so any count is safe -- early-return.
-
-        The cross-rank check (b) is itself a collective; all ranks reach it because I2I
-        vs T2I is fixed by the run's task/config (see ``_is_i2i``) and every sample in an
-        I2I run carries condition images. The robust fix to *support* variable counts
-        under sharding is to gather ``language_model`` once (``summon_full_params`` /
-        ``reshard_after_forward=False``); until then we fail fast (a clear error beats a
-        silent hang).
+        Each reference adds two language-model calls. Dropout can omit tokens within
+        those calls, but FSDP/ZeRO-3 peers must execute the same number of forwards.
+        A rank with only T2I records contributes zero rounds in a mixed SFT source.
         """
         if not self._is_param_sharded():
             return
-        counts = {len(imgs) for imgs in condition_images}
-        if len(counts) > 1:
-            raise RuntimeError(
-                "Bagel batched I2I with a variable per-sample condition-image count "
-                f"(counts={sorted(counts)}) is unsupported under a parameter-sharded "
-                "language_model (FSDP FULL/HYBRID or FSDP2): the prefill "
-                "makes a data-dependent number of all-gathers (2*max_count+2) that "
-                "mismatches across ranks and deadlocks. Use DDP or ZeRO-1/2 for "
-                "variable-count I2I, pad to a uniform count, or gather language_model "
-                "once (summon_full_params / reshard_after_forward=False)."
-            )
+        counts = [len(images) for images in condition_images] or [0]
+        lowest, highest = min(counts), max(counts)
         if self.accelerator.num_processes > 1:
-            local_rounds = max(counts) if counts else 0
-            global_max = torch.tensor([local_rounds], device=self.accelerator.device)
-            global_min = global_max.clone()
-            dist.all_reduce(global_max, op=dist.ReduceOp.MAX)
-            dist.all_reduce(global_min, op=dist.ReduceOp.MIN)
-            if int(global_max.item()) != int(global_min.item()):
-                raise RuntimeError(
-                    "Bagel batched I2I has a per-sample condition-image count that is "
-                    "uniform within each rank but differs ACROSS ranks (num_rounds in "
-                    f"[{int(global_min.item())}, {int(global_max.item())}]) under a "
-                    "parameter-sharded language_model: the prefill issues a different "
-                    "number of all-gathers per rank and deadlocks. Use DDP or ZeRO-1/2, "
-                    "or pad all ranks to a uniform reference-image count."
-                )
+            lower = torch.tensor(lowest, device=self.accelerator.device)
+            upper = torch.tensor(highest, device=self.accelerator.device)
+            dist.all_reduce(lower, op=dist.ReduceOp.MIN)
+            dist.all_reduce(upper, op=dist.ReduceOp.MAX)
+            lowest, highest = lower.item(), upper.item()
+        if lowest != highest:
+            raise RuntimeError(
+                f"BAGEL sharded prefill requires a uniform reference-image count within "
+                f"and across ranks; received counts in [{lowest}, {highest}]. "
+                "Use DDP or ZeRO-1/2 for variable-count I2I or group records by reference count."
+            )
 
     # ======================== Reference Guidance ========================
 
@@ -806,7 +786,8 @@ class BagelAdapter(BaseAdapter):
         prompt: Union[str, List[str]],
         condition_images: Optional[List[List[Image.Image]]] = None,
         think: bool = False,
-    ) -> Tuple[Dict, Dict, Dict]:
+        sft_condition_masks: Optional[List[frozenset[str]]] = None,
+    ) -> Tuple[Dict, Optional[Dict], Optional[Dict]]:
         """Build KV-cache contexts for generation over B samples (NaViT packing).
 
         A single ``str`` prompt is treated as ``B == 1``; a ``List[str]`` of length
@@ -832,6 +813,8 @@ class BagelAdapter(BaseAdapter):
         """
         prompts = [prompt] if isinstance(prompt, str) else prompt
         batch_size = len(prompts)
+        if sft_condition_masks is not None and len(sft_condition_masks) != batch_size:
+            raise ValueError("BAGEL SFT condition masks must align with the packed prompts.")
         if condition_images is not None:
             if len(condition_images) != batch_size:
                 raise ValueError(
@@ -879,7 +862,24 @@ class BagelAdapter(BaseAdapter):
                             )
                         else:
                             round_tensors.append(None)
-                    gen_context = self._update_context_image(round_tensors, gen_context)
+                    if sft_condition_masks is None:
+                        gen_context = self._update_context_image(round_tensors, gen_context)
+                    else:
+                        gen_context = self._append_sft_image_round(
+                            round_tensors, gen_context, r, sft_condition_masks
+                        )
+
+            if sft_condition_masks is not None:
+                texts = [
+                    None if "text" in mask else text
+                    for text, mask in zip(prompts, sft_condition_masks)
+                ]
+                if any(text is not None for text in texts):
+                    gen_context = self._update_context_text(texts, gen_context)
+                elif self._is_param_sharded():
+                    self._update_context_text(prompts, self._snapshot_context(gen_context))
+                # SFT predicts only the selected branch with guidance scales of one.
+                return gen_context, None, None
 
             # cfg_text drops the text conditioning: snapshot state after images, before
             # the text append below. A shallow snapshot (shared KV-tensor refs) suffices
@@ -892,6 +892,37 @@ class BagelAdapter(BaseAdapter):
             cfg_img_context = self._update_context_text(prompts, cfg_img_context)
 
         return gen_context, cfg_text_context, cfg_img_context
+
+    def _append_sft_image_round(
+        self,
+        round_tensors: List[Optional[torch.Tensor]],
+        gen_context: Dict,
+        reference: int,
+        masks: List[frozenset[str]],
+    ) -> Dict:
+        """Append the selected VAE and ViT segments at their native positions."""
+        for representation in ("vae", "vit"):
+            segment = f"{representation}:{reference}"
+            kept = [
+                tensor if segment not in mask else None
+                for tensor, mask in zip(round_tensors, masks)
+            ]
+            options = {"vae": representation == "vae", "vit": representation == "vit"}
+            if any(tensor is not None for tensor in kept):
+                gen_context = self._update_context_image(kept, gen_context, **options)
+            elif self._is_param_sharded():
+                # Other DP ranks can retain this segment. Participate in the
+                # same sharded forward without modifying the selected cache.
+                self._update_context_image(
+                    round_tensors, self._snapshot_context(gen_context), **options
+                )
+            # BAGEL's pretraining packer reserves one RoPE position for
+            # a dropped image segment. A missing reference reserves none.
+            gen_context["ropes"] = [
+                rope + int(tensor is not None and segment in mask)
+                for rope, tensor, mask in zip(gen_context["ropes"], round_tensors, masks)
+            ]
+        return gen_context
 
     @staticmethod
     def _snapshot_context(gen_context: Dict) -> Dict:
@@ -917,7 +948,9 @@ class BagelAdapter(BaseAdapter):
 
     # ─── _update_context_text ───
     @torch.no_grad()
-    def _update_context_text(self, text: Union[str, List[str]], gen_context: Dict) -> Dict:
+    def _update_context_text(
+        self, text: Union[str, List[Optional[str]]], gen_context: Dict
+    ) -> Dict:
         """Append text tokens to the KV-cache context for one or B samples.
 
         A single ``str`` is treated as ``B == 1``; a ``List[str]`` of length B is
@@ -1012,12 +1045,12 @@ class BagelAdapter(BaseAdapter):
     def _prepare_gen_inputs(
         self,
         gen_context: Dict,
-        cfg_text_context: Dict,
-        cfg_img_context: Dict,
+        cfg_text_context: Optional[Dict],
+        cfg_img_context: Optional[Dict],
         image_sizes: List[Tuple[int, int]],
         device: torch.device,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-    ) -> Tuple[Dict, Dict, Dict]:
+    ) -> Tuple[Dict, Optional[Dict], Optional[Dict]]:
         """Build packed VAE-latent generation inputs (+ CFG inputs) for B samples.
 
         ``image_sizes`` carries one ``(H, W)`` per sample. The model's
@@ -1035,19 +1068,18 @@ class BagelAdapter(BaseAdapter):
             device=device,
             generator=generator,
         )
-        cfg_text_generation_input = bagel.prepare_vae_latent_cfg(
-            curr_kvlens=cfg_text_context["kv_lens"],
-            curr_rope=cfg_text_context["ropes"],
-            image_sizes=image_sizes,
-            device=device,
-        )
-        cfg_img_generation_input = bagel.prepare_vae_latent_cfg(
-            curr_kvlens=cfg_img_context["kv_lens"],
-            curr_rope=cfg_img_context["ropes"],
-            image_sizes=image_sizes,
-            device=device,
-        )
-        return generation_input, cfg_text_generation_input, cfg_img_generation_input
+
+        def cfg_inputs(context):
+            if context is None:
+                return None
+            return bagel.prepare_vae_latent_cfg(
+                curr_kvlens=context["kv_lens"],
+                curr_rope=context["ropes"],
+                image_sizes=image_sizes,
+                device=device,
+            )
+
+        return generation_input, cfg_inputs(cfg_text_context), cfg_inputs(cfg_img_context)
 
     # ======================== Flow Forward (grad-safe) ========================
 
@@ -1813,6 +1845,7 @@ class BagelAdapter(BaseAdapter):
         prompt: Optional[Union[str, List[str]]] = None,
         condition_images: Optional[List[List[Image.Image]]] = None,
         image_shape: Optional[Tuple[int, int]] = None,
+        sft_condition_masks: Optional[List[frozenset[str]]] = None,
         **kwargs,
     ) -> SDESchedulerOutput:
         """Run a single denoising step: flow prediction -> scheduler step.
@@ -1898,13 +1931,16 @@ class BagelAdapter(BaseAdapter):
 
         # Per-sample List[List[PIL]] for I2I (after the FSDP guard), or None for T2I.
         # Both paths run the same NaViT-packed rebuild + forward.
-        cond = self._resolve_condition_images_for_packing(condition_images)
+        cond = self._resolve_condition_images_for_packing(
+            condition_images, mixed_sft_tasks=sft_condition_masks is not None
+        )
         return self._forward_rebuild(
             t=t,
             latents=latents,
             prompts=prompt,
             condition_images=cond,
             image_shape=_image_shape,
+            sft_condition_masks=sft_condition_masks,
             t_next=t_next,
             next_latents=next_latents,
             **step_kwargs,
@@ -1919,6 +1955,7 @@ class BagelAdapter(BaseAdapter):
         image_shape: Tuple[int, int],
         t_next: Optional[torch.Tensor],
         next_latents: Optional[torch.Tensor],
+        sft_condition_masks: Optional[List[frozenset[str]]] = None,
         **step_kwargs: Any,
     ) -> SDESchedulerOutput:
         """Rebuild a KV-cache context from prompts and run one ``_forward_packed``.
@@ -1936,7 +1973,7 @@ class BagelAdapter(BaseAdapter):
         device = latents.device
         with torch.no_grad():
             gen_ctx, cfg_text_ctx, cfg_img_ctx = self._build_gen_context(
-                prompts, condition_images=condition_images
+                prompts, condition_images=condition_images, sft_condition_masks=sft_condition_masks
             )
             generation_input, cfg_text_generation_input, cfg_img_generation_input = (
                 self._prepare_gen_inputs(
@@ -1954,8 +1991,8 @@ class BagelAdapter(BaseAdapter):
             cfg_text_generation_input=cfg_text_generation_input,
             cfg_img_generation_input=cfg_img_generation_input,
             past_key_values=gen_ctx["past_key_values"],
-            cfg_text_past_kv=cfg_text_ctx["past_key_values"],
-            cfg_img_past_kv=cfg_img_ctx["past_key_values"],
+            cfg_text_past_kv=cfg_text_ctx["past_key_values"] if cfg_text_ctx is not None else None,
+            cfg_img_past_kv=cfg_img_ctx["past_key_values"] if cfg_img_ctx is not None else None,
             t_next=t_next,
             next_latents=next_latents,
             **step_kwargs,

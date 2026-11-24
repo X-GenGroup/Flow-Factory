@@ -48,6 +48,7 @@ class SenseNovaImagePrefix(NamedTuple):
     query: str
     pixel_values: Optional[torch.Tensor] = None
     grid_hw: Optional[torch.Tensor] = None
+    discard_visual_embeddings: bool = False
 
 
 class SenseNovaPrefixOutput(NamedTuple):
