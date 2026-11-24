@@ -761,7 +761,7 @@ def _sensenova_sft_fsdp_worker(rank, store_path, result_dir, options):
         make_input_adapter,
     )
     from test_model_preparation import initialize_cuda
-    from torch.distributed.fsdp import fully_shard
+    from torch.distributed.fsdp import FSDPModule, fully_shard
 
     from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
 
@@ -802,7 +802,14 @@ def _sensenova_sft_fsdp_worker(rank, store_path, result_dir, options):
         result.float().square().mean().backward()
         grads = [p.grad.to_local() for p in model.parameters() if p.grad is not None]
         assert grads and all(g.isfinite().all() for g in grads) and any(g.any() for g in grads)
+        assert isinstance(model, FSDPModule)
         row = {
+            "rank": dist.get_rank(),
+            "world_size": dist.get_world_size(),
+            "process_group_backend": dist.get_backend(),
+            "device": result.device.type,
+            "distributed_type": adapter.accelerator.distributed_type.value,
+            "fsdp_version": 2,
             "max_error": float((result - expected).abs().max().detach()),
             "gradients": len(grads),
         }

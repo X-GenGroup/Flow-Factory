@@ -455,7 +455,7 @@ def _bagel_sft_fsdp_worker(rank, store_path, result_dir, options):
         make_input_adapter,
     )
     from test_model_preparation import initialize_cuda
-    from torch.distributed.fsdp import fully_shard
+    from torch.distributed.fsdp import FSDPModule, fully_shard
 
     from flow_factory.scheduler import FlowMatchEulerDiscreteSDEScheduler
 
@@ -515,7 +515,14 @@ def _bagel_sft_fsdp_worker(rank, store_path, result_dir, options):
         ):
             with pytest.raises(RuntimeError, match="uniform reference-image count"):
                 adapter._resolve_condition_images_for_packing(local, mixed_sft_tasks=True)
+        assert isinstance(pipeline.transformer, FSDPModule)
         row = {
+            "rank": dist.get_rank(),
+            "world_size": dist.get_world_size(),
+            "process_group_backend": dist.get_backend(),
+            "device": result.device.type,
+            "distributed_type": adapter.accelerator.distributed_type.value,
+            "fsdp_version": 2,
             "max_error": float((result - expected).abs().max().detach()),
             "gradients": len(grads),
         }
