@@ -1585,6 +1585,23 @@ reviewed_transitions:
     after_sha256: 41b40f8e339f296e1d6eafa2ed7413ce80742cb5b36b9536b3d40e0ee2274318
 
 focused_owners:
+  - paths: [src/flow_factory/data_utils/dataset.py]
+    symbols: [GeneralDataset.collate_fn, collate_model_inputs]
+    requires: [evaluation.contracts, sft.dropout.core_contracts, algorithm.offline_dpo.raw_cache]
+    reason: General and supervised batches share tensor stacking, ragged columns and Python media. Exercise both dataset callers and a native preference update.
+  - paths: [src/flow_factory/data_utils/offline_dataset.py]
+    symbols: ['<import:flow_factory.data_utils.dataset.collate_model_inputs>', '<definition_order>', _collate_condition_mappings,
+              _require_supervision_decoder_coverage, require_supervision_decoders, resolve_media_decoders, supervision_candidates]
+    requires: [evaluation.contracts, sft.dropout.core_contracts, algorithm.offline_dpo.raw_cache]
+    reason: Verify finite manifest identity, target and preference arm decoding, worker safety and raw/cached collation.
+  - paths: [src/flow_factory/data_utils/offline_train_data.py]
+    symbols: [_available_decoder_types, _iter_supervision_assets, _require_decoder_coverage, _validate_pipeline_outputs]
+    requires: [evaluation.contracts, sft.dropout.core_contracts, algorithm.offline_dpo.raw_cache]
+    reason: Both preference arms and demonstration targets must satisfy the pipeline contract and have a worker-safe decoder before preprocessing.
+  - paths: [src/flow_factory/data_utils/offline_train_data.py]
+    symbols: ['<module>']
+    requires: [evaluation.contracts, sft.dropout.core_contracts, algorithm.offline_dpo.raw_cache, sft.dropout.klein_fsdp2, sft.dropout.wan_continuation]
+    reason: Module-wide binding changes in the offline loader exercise its full SFT and preference input paths, including distributed continuation.
   - paths:
     - src/flow_factory/data_utils/offline_dataset.py
     - src/flow_factory/data_utils/offline_loader.py

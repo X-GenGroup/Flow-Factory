@@ -14,6 +14,7 @@
 
 """Verify raw encoding against actual Arrow cache formatting for mixed offline conditions."""
 
+import pytest
 import torch
 from datasets import Dataset
 from PIL import Image
@@ -82,3 +83,25 @@ def test_raw_sft_matches_cache_dtypes_and_ragged_fields_without_serializing_imag
     assert actual["prompt_embeds"][0].dtype == torch.float32
     assert actual["mask"].dtype == torch.int64
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_offline_collation_preserves_row_order_and_checks_every_key():
+    image = Image.new("RGB", (1, 1))
+    rows = [
+        {
+            "dense": torch.tensor([i]),
+            "ragged": torch.arange(i + 1),
+            "mixed": value,
+            "images": [image],
+        }
+        for i, value in enumerate((torch.tensor([[3], [4]]), [torch.tensor([5])]))
+    ]
+    result = _collate_condition_mappings(rows)
+    torch.testing.assert_close(result["dense"], torch.tensor([[0], [1]]))
+    torch.testing.assert_close(result["ragged"], [torch.tensor([0]), torch.tensor([0, 1])])
+    torch.testing.assert_close(
+        result["mixed"], [[torch.tensor([3]), torch.tensor([4])], [torch.tensor([5])]]
+    )
+    assert all(row[0] is image for row in result["images"])
+    with pytest.raises(ValueError, match="identical keys.*index 1"):
+        _collate_condition_mappings([rows[0], {**rows[1], "other": None}])

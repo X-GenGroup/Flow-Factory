@@ -987,7 +987,7 @@ class GeneralDataset(Dataset):
         return self.processed_dataset[idx]
 
     @staticmethod
-    def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def collate_fn(batch: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
         """Collate function for DataLoader.
 
         Stacks tensors with same shape, keeps ragged tensors as lists. Image
@@ -1003,50 +1003,33 @@ class GeneralDataset(Dataset):
         Returns:
             Collated batch dictionary
         """
-        if not batch:
-            return {}
-
-        collated_batch = {}
-        for key in batch[0].keys():
-            values = [sample[key] for sample in batch]
-            # Classify value types
-            is_tensor = [isinstance(v, torch.Tensor) for v in values]
-            is_list = [isinstance(v, list) for v in values]
-
-            if all(is_tensor):
-                # Case 1: All elements are tensors
-                shapes = [v.shape for v in values]
-                if all(s == shapes[0] for s in shapes):
-                    # Same shape → stack into batch tensor
-                    collated_batch[key] = torch.stack(values, dim=0)
-                else:
-                    # Different shapes → keep as List[Tensor]
-                    collated_batch[key] = values
-
-            elif any(is_tensor) and any(is_list):
-                # Case 2: Mixed tensor/list → normalize to List[List[Tensor]].
-                # Handles ragged tensor columns (e.g. image latents) where the
-                # dataset auto-stacks same-shape samples into a Tensor but keeps
-                # variable-shape samples as List[Tensor]; unbind the stacked ones
-                # so the whole column is a consistent List[List[Tensor]].
-                collated_batch[key] = [
-                    list(torch.unbind(v, dim=0)) if isinstance(v, torch.Tensor) else v
-                    for v in values
-                ]
-
-            else:
-                # Case 3: Other types (lists, ints, strs, and python-format
-                # columns: metadata dicts and PIL image columns).
-                # Image columns arrive here as per-sample List[PIL.Image]; keeping
-                # `values` yields a List[List[PIL.Image]] MultiImageBatch.
-                collated_batch[key] = values
-
-        return collated_batch
+        return collate_model_inputs(batch)
 
 
 # ========================================================================================
 # Utility Functions
 # ========================================================================================
+
+
+def collate_model_inputs(batch: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Stack equal-shaped tensors and preserve per-record structure for ragged or Python fields."""
+    if not batch:
+        return {}
+    columns = {}
+    for key in batch[0]:
+        values = [row[key] for row in batch]
+        tensors = [isinstance(value, torch.Tensor) for value in values]
+        if all(tensors) and all(value.shape == values[0].shape for value in values):
+            columns[key] = torch.stack(values)
+        elif any(tensors) and any(isinstance(value, list) for value in values):
+            # Arrow can return a stacked tensor for one record and a ragged list for another.
+            columns[key] = [
+                list(value.unbind(0)) if isinstance(value, torch.Tensor) else value
+                for value in values
+            ]
+        else:
+            columns[key] = values
+    return columns
 
 
 def _validate_source_hash_override(value: Optional[str]) -> Optional[str]:

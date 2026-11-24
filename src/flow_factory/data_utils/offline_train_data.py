@@ -51,22 +51,18 @@ from .offline_condition_cache import (
 )
 from .offline_conditions import RawOfflineConditionSource
 from .offline_dataset import (
-    DEFAULT_MEDIA_DECODERS,
     OFFLINE_CONDITION_ID_COLUMN,
     MediaDecoder,
     OfflineDataset,
     OfflineSupervisionType,
     compute_offline_condition_id,
     load_offline_manifest,
+    require_supervision_decoders,
+    resolve_media_decoders,
+    supervision_candidates,
 )
 from .offline_loader import build_offline_dataloader
-from .schema import (
-    DemonstrationSupervision,
-    MediaAsset,
-    MediaType,
-    NormalizedDatasetRecord,
-    PreferenceSupervision,
-)
+from .schema import MediaType, NormalizedDatasetRecord
 from .sft_conditions import SFTConditionSource, absent_caption_records
 
 
@@ -179,7 +175,7 @@ def build_offline_train_dataloader(
         preprocess_func,
         preprocess_kwargs,
     )
-    available_decoder_types = _available_decoder_types(media_decoders)
+    decoders = resolve_media_decoders(media_decoders)
 
     source_records = []
     for source in training_sources:
@@ -211,9 +207,9 @@ def build_offline_train_dataloader(
             contract=pipeline_io_contract,
             source_name=source.name,
         )
-        _require_decoder_coverage(
+        require_supervision_decoders(
             records,
-            available_decoder_types,
+            decoders,
             source_name=source.name,
         )
         source_records.append((source, dataset_dir, records))
@@ -351,19 +347,9 @@ def _validate_pipeline_outputs(
 ) -> None:
     """Validate every supervision candidate before condition preprocessing."""
     for row_index, record in enumerate(records):
-        supervision = record.supervision
-        if isinstance(supervision, DemonstrationSupervision):
-            candidates = (("target", supervision.target.media),)
-        elif isinstance(supervision, PreferenceSupervision):
-            candidates = (
-                ("chosen", supervision.chosen.media),
-                ("rejected", supervision.rejected.media),
-            )
-        else:
-            raise RuntimeError("normalized offline record unexpectedly lacks supervision")
-        for candidate_name, media in candidates:
+        for candidate_name, candidate in supervision_candidates(record):
             try:
-                validate_pipeline_output_candidate(media, contract)
+                validate_pipeline_output_candidate(candidate.media, contract)
             except (TypeError, ValueError) as exc:
                 error_type = type(exc)
                 raise error_type(
@@ -561,48 +547,6 @@ def _slice_records(
             f"got {max_dataset_size!r}"
         )
     return tuple(records[:max_dataset_size])
-
-
-def _available_decoder_types(
-    media_decoders: Optional[Mapping[MediaType, MediaDecoder]],
-) -> frozenset[MediaType]:
-    available = set(DEFAULT_MEDIA_DECODERS)
-    if media_decoders is not None:
-        for media_type in media_decoders:
-            if media_type not in ("image", "video", "audio"):
-                raise ValueError(f"unsupported offline media decoder type: {media_type!r}")
-            available.add(media_type)
-    return frozenset(available)
-
-
-def _require_decoder_coverage(
-    records: Sequence[NormalizedDatasetRecord],
-    available_decoder_types: frozenset[MediaType],
-    *,
-    source_name: str,
-) -> None:
-    for asset in _iter_supervision_assets(records):
-        if asset.type not in available_decoder_types:
-            raise NotImplementedError(
-                f"offline source {source_name!r} has no decoder for target media type "
-                f"{asset.type!r} at {asset.path!r}"
-            )
-
-
-def _iter_supervision_assets(
-    records: Sequence[NormalizedDatasetRecord],
-) -> Sequence[MediaAsset]:
-    assets = []
-    for record in records:
-        supervision = record.supervision
-        if isinstance(supervision, DemonstrationSupervision):
-            assets.extend(supervision.target.media)
-        elif isinstance(supervision, PreferenceSupervision):
-            assets.extend(supervision.chosen.media)
-            assets.extend(supervision.rejected.media)
-        else:
-            raise RuntimeError("normalized offline record unexpectedly lacks supervision")
-    return tuple(assets)
 
 
 __all__ = ["build_offline_train_dataloader"]
