@@ -66,6 +66,7 @@ from ..parallelism.sequence import (
 )
 from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
 from ..pipeline_contracts import image_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 
 logger = setup_logger(__name__)
 
@@ -84,6 +85,7 @@ class ZImageSample(T2ISample):
 class ZImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapt Z-Image for online generation and offline image targets."""
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
 
     supports_sharded_target_materialization = True

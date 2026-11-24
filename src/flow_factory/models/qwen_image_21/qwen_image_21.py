@@ -83,6 +83,7 @@ from ..parallelism.context import ContextParallelCapability, ContextParallelLayo
 from ..parallelism.sequence import ColumnParallelRegion
 from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
 from ..pipeline_contracts import image_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from .output_codec import (
     QWEN_IMAGE_21_DIFFUSERS_COMMIT,
     encode_qwen_image_21_output,
@@ -209,6 +210,7 @@ class QwenImage21ContextParallelLayout(ContextParallelLayout):
 class QwenImage21Adapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for unified Qwen-Image 2.1 text-to-image and image editing."""
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
 
     supports_diffusers_cache = False

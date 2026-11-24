@@ -67,6 +67,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._flux2_parallel import Flux2ParallelAdapterMixin
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
 
@@ -96,6 +97,7 @@ MAX_SINGLE_BLOCKS = 64
 
 class Flux2Adapter(Flux2ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
     _flux2_guidance_embeds = True
     offline_training_forward_overrides = MappingProxyType({"guidance_scale": 3.5})

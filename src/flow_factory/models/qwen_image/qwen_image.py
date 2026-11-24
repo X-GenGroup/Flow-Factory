@@ -72,6 +72,7 @@ from ..parallelism.sequence import (
 )
 from ..parallelism.tensor import ShardedInputReplicatedWeight, SharedInputColwiseParallel
 from ..pipeline_contracts import image_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._context_parallel import compose_qwen_sequence_boundaries
 from ._output import encode_qwen_output_images
 from ._utils import _pad_seq_dim
@@ -100,6 +101,7 @@ class QwenImageSample(T2ISample):
 class QwenImageAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Adapter for Qwen-Image text-to-image models."""
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
 
     supports_sharded_target_materialization = True

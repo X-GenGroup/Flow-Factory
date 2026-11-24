@@ -410,7 +410,9 @@ def requirements_for(scope: dict, symbols: dict, catalog: dict, policy: dict) ->
     return requirements
 
 
-def refine_routing(snapshot: dict, scope: dict, symbols: dict, rules: dict, source) -> None:
+def refine_routing(
+    snapshot: dict, scope: dict, symbols: dict, rules: dict, source, policy: dict
+) -> None:
     """Retain raw risk/symbols while deriving fail-closed structural routing evidence."""
     bindings = validation_changes.ImportBindings(source)
     semantic = {}
@@ -418,7 +420,16 @@ def refine_routing(snapshot: dict, scope: dict, symbols: dict, rules: dict, sour
     for path, pair in snapshot["pairs"].items():
         if not path.endswith(".py") or (path in snapshot["mode_changes"] and pair[0] is not None):
             continue
-        semantic[path] = validation_changes.semantic_changes(path, *pair, bindings)
+        eligible_imports = {
+            name
+            for rule in policy.get("focused_owners", [])
+            if matches(path, rule["paths"])
+            for name in rule["symbols"]
+            if name.startswith("<import:")
+        }
+        semantic[path] = validation_changes.semantic_changes(
+            path, *pair, bindings, eligible_imports=eligible_imports
+        )
         if not semantic[path] and pair[1] is not None:
             imports.append(path)
         elif validation_changes.export_bridge(path, *pair, bindings):
@@ -487,7 +498,7 @@ def generate(root: Path, base: str, head: str, additions: list[str], extra: list
 
     validation_catalog.validate_catalog(catalog, root=root, source=source)
     if policy.get("change_aware_routing", False):
-        refine_routing(snapshot, scope, symbols, rules, source)
+        refine_routing(snapshot, scope, symbols, rules, source, policy)
     requirements = requirements_for(scope, symbols, catalog, policy)
     for obligation in extra:
         requirements["obligations"].setdefault(obligation, []).append(
@@ -563,6 +574,7 @@ def replay(root: Path, base: str, head: str) -> dict:
             lambda path: agent_diff.source(
                 root, snapshot["head_commit"], path, agent_diff.MAX_SOURCE_BYTES
             ),
+            policy,
         )
     return {
         "execution_eligible": False,

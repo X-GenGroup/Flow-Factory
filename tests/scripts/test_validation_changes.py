@@ -449,3 +449,61 @@ def test_attention_reference_consumer_boundary_matches_reviewed_route():
                 assert all(
                     alias.name != "test_context_parallel_training" for alias in node.names
                 ), path
+
+
+def test_dropout_import_partition_requires_an_exact_new_binding_and_an_unchanged_module(bindings):
+    path = "src/flow_factory/models/flux/flux1.py"
+    name = "<import:flow_factory.models.sft_dropout.CAPTION_DROPOUT>"
+    original = "from ..abc import BaseAdapter\n\nclass A(BaseAdapter):\n    version = 1\n"
+    imported = "from ..sft_dropout import CAPTION_DROPOUT\n"
+    changed = original.replace("\n\nclass", "\n" + imported + "\nclass").replace(
+        "    version", "    sft_condition_dropout_policy = CAPTION_DROPOUT\n    version"
+    )
+
+    def symbols(text):
+        return changes.semantic_changes(path, original, text, bindings, eligible_imports={name})
+
+    assert symbols(changed) == [name, "A.sft_condition_dropout_policy"]
+    existing_consumer = "\ndef inference(): return CAPTION_DROPOUT\n"
+    assert "<module>" in changes.semantic_changes(
+        path,
+        original + existing_consumer,
+        changed + existing_consumer,
+        bindings,
+        eligible_imports={name},
+    )
+    for other in (
+        changed + "register()\n",
+        changed.replace(imported, imported.rstrip() + " as arbitrary\n"),
+        changed.replace(imported, "from ..other import CAPTION_DROPOUT\n"),
+        changed.replace(imported, imported + "from ..other import arbitrary\n"),
+        changed.replace(imported, "") + imported,
+    ):
+        assert "<module>" in symbols(other)
+
+
+def test_sft_declaration_does_not_narrow_an_unrelated_forward_or_module_change():
+    import yaml
+
+    policy = yaml.safe_load((planner.ROOT / planner.POLICY).read_text())
+    path = "src/flow_factory/models/flux/flux1.py"
+    allowed = [
+        "Flux1Adapter.sft_condition_dropout_policy",
+        "<import:flow_factory.models.sft_dropout.CAPTION_DROPOUT>",
+    ]
+    scope = {
+        "paths": [path],
+        "facets": [],
+        "scope_complete": True,
+        "semantic_symbols": {path: allowed},
+    }
+    assert set(planner.infer_requirements(scope, policy, {})["obligations"]) == {
+        "sft.dropout.images",
+        "repository.consistency",
+    }
+    for unknown in ("Flux1Adapter.forward", "<module>"):
+        scope["semantic_symbols"][path] = [*allowed, unknown]
+        assert (
+            "model.flux.complete_tp_sft"
+            in planner.infer_requirements(scope, policy, {})["obligations"]
+        )
