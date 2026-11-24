@@ -86,6 +86,7 @@ from ..configured_image_output import (
 from ..pipeline_contracts import image_output_contract
 from ..precision import DTypePolicy
 from ..runtime import ModularPipelineRuntime
+from ..sft_dropout import CAPTION_DROPOUT
 from ._flux3_parallel import (
     Flux3ParallelAdapterMixin,
     flux3_sequence_parallel_plan,
@@ -139,6 +140,7 @@ class Flux3Adapter(Flux3ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin,
     packs.
     """
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
 
     preprocess_cache_version: ClassVar[str] = "flux3-native-reference-canvas-v2"

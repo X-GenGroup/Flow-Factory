@@ -83,6 +83,7 @@ from ..parallelism.context import (
 )
 from ..parallelism.plan import sequence_parallel_enabled
 from ..pipeline_contracts import image_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._output import (
     encode_qwen_output_images,
     encode_qwen_vae_image,
@@ -193,6 +194,7 @@ class _QwenImageEditOutputStateCodec:
 class QwenImageEditPlusAdapter(BaseAdapter):
     """Adapter for Qwen-Image-Edit Plus image editing models."""
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
 
     supports_sharded_target_materialization = True

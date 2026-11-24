@@ -68,6 +68,7 @@ from ..parallelism.context import (
     ContextParallelLayout,
 )
 from ..pipeline_contracts import image_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._output import encode_flux1_vae_image, prepare_flux1_output_latents
 from .flux1 import Flux1Adapter
 
@@ -145,6 +146,7 @@ class FluxKontextContextParallelLayout(ContextParallelLayout):
 class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1 Kontext)."""
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
 
     supports_sharded_target_materialization = True
