@@ -165,7 +165,7 @@ def build_default_execution_identity_payload(trainer: Any) -> dict[str, Any]:
         "effective_pipeline_io_contract",
         None,
     )
-    return {
+    execution = {
         "contract": {
             "acquisition": _enum_identity_value(
                 acquisition,
@@ -187,6 +187,15 @@ def build_default_execution_identity_payload(trainer: Any) -> dict[str, Any]:
         "model_forward": model,
         "optimizer_execution": optimizer_execution,
     }
+    time_sampling = training.get("time_sampling_strategy", training.get("weighting_scheme"))
+    if (
+        isinstance(time_sampling, str)
+        and time_sampling.lower() in {"uniform", "logit_normal"}
+        and training.get("time_shift", 1.0) != 1.0
+    ):
+        # Older checkpoints with the same non-neutral value used the opposite warp.
+        execution["training_time_shift_convention"] = "noise_odds_multiplier"
+    return execution
 
 
 def build_default_data_identity_payload(trainer: Any) -> dict[str, Any]:

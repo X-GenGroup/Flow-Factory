@@ -26,6 +26,9 @@ when TIMESTEP_MAX=1000). All samplers return **scheduler-scale** timesteps in
 extra scaling. Use ``flow_match_sigma(t) = t / TIMESTEP_MAX`` for linear
 flow interpolation ``x_t = (1-σ) x_0 + σ ε``.
 
+For continuous sampling, ``time_shift`` multiplies noise odds ``σ / (1-σ)``
+in the coordinate being shifted. Larger values favor higher noise.
+
 All samplers accept an optional ``generator`` argument for reproducible /
 cross-rank-deterministic draws:
 
@@ -37,6 +40,8 @@ cross-rank-deterministic draws:
   timesteps regardless of their device placement.
 """
 
+import math
+from numbers import Real
 from typing import Optional, Tuple, Union
 
 import torch
@@ -184,6 +189,23 @@ def _normalize_timestep_range(
     return 0.0, float(timestep_range)
 
 
+def _shift_denoising_fraction(fraction: torch.Tensor, time_shift: float) -> torch.Tensor:
+    """Scale noise odds by ``time_shift`` while keeping the denoising coordinate."""
+    if (
+        isinstance(time_shift, bool)
+        or not isinstance(time_shift, Real)
+        or not math.isfinite(time_shift)
+        or time_shift <= 0
+    ):
+        raise ValueError(f"time_shift must be a finite positive number, got {time_shift!r}")
+    if time_shift == 1.0:
+        return fraction
+
+    # Noise is 1 - fraction. Subtracting in clean-side log odds is equivalent to
+    # adding on the noise side and preserves both endpoints for extreme shifts.
+    return torch.sigmoid(torch.logit(fraction) - math.log(time_shift))
+
+
 class TimeSampler:
     """Continuous and discrete time sampler for flow matching training."""
 
@@ -219,7 +241,7 @@ class TimeSampler:
 
         u = u_standard * logit_std + logit_mean
         raw = torch.sigmoid(u)
-        raw = time_shift * raw / (1 + (time_shift - 1) * raw)
+        raw = _shift_denoising_fraction(raw, time_shift)
         raw = torch.clamp(raw, min=0.01, max=1.0 - 1e-6)
         return raw.to(device)
 
@@ -238,8 +260,8 @@ class TimeSampler:
         """Logit-normal time sampling; returns scheduler-scale timesteps in ``[0, TIMESTEP_MAX]``.
 
         ``timestep_range`` is interpreted as ``(frac_lo, frac_hi)`` (fraction along 1000→0).
-        A unit interval sample ``raw`` is mapped to ``frac = frac_lo + raw * (frac_hi - frac_lo)``,
-        then ``t = TIMESTEP_MAX * (1 - frac)``.
+        Shift and clamp a unit interval sample ``raw``, then map it to
+        ``frac = frac_lo + raw * (frac_hi - frac_lo)`` and ``t = TIMESTEP_MAX * (1 - frac)``.
 
         Args:
             generator: Optional ``torch.Generator`` for deterministic draws.
@@ -288,7 +310,7 @@ class TimeSampler:
             device=rng_device,
         )
         raw = torch.sigmoid(u_standard * logit_std + logit_mean)
-        raw = time_shift * raw / (1 + (time_shift - 1) * raw)
+        raw = _shift_denoising_fraction(raw, time_shift)
         raw = torch.clamp(raw, min=0.01, max=1.0 - 1e-6)
         frac_lo, frac_hi = _normalize_timestep_range(timestep_range)
         frac = frac_lo + raw * (frac_hi - frac_lo)
@@ -316,8 +338,7 @@ class TimeSampler:
         f = frac_lo + normalized * (frac_hi - frac_lo)
         perm = torch.randperm(num_timesteps, generator=generator, device=rng_device)
         f = f[perm]
-        if abs(time_shift - 1.0) > 1e-6:
-            f = time_shift * f / (1 + (time_shift - 1) * f)
+        f = _shift_denoising_fraction(f, time_shift)
         t = TIMESTEP_MAX * (1.0 - f)
         return t.to(device).unsqueeze(1).expand(-1, batch_size)
 
@@ -342,8 +363,7 @@ class TimeSampler:
             device=rng_device,
         )
         fraction = frac_lo + fraction * (frac_hi - frac_lo)
-        if abs(time_shift - 1.0) > 1e-6:
-            fraction = time_shift * fraction / (1 + (time_shift - 1) * fraction)
+        fraction = _shift_denoising_fraction(fraction, time_shift)
         return (TIMESTEP_MAX * (1.0 - fraction)).to(output_device)
 
     @staticmethod

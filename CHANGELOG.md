@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Continuous training `time_shift` now multiplies noise odds. Larger values favor higher noise.
+  See the [migration guidance](guidance/training/sampling.md#shift-continuous-training-timesteps).
+
 ## 0.6.0
 
 See the [release notes](docs/release/v0.6-notes.md) for recipes, upgrade instructions and evidence.
