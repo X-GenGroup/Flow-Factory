@@ -61,6 +61,7 @@ from ..parallelism.sequence import (
 )
 from ..parallelism.tensor import ShardedAcrossHeadRMSNorm, SharedInputColwiseParallel
 from ..pipeline_contracts import audio_video_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._common import (
     LTX2_COMPONENT_ORDER,
     attach_ltx2_state_masks,
@@ -256,6 +257,7 @@ class LTX2_T2AV_Adapter(BaseAdapter):
         ("num_attention_heads", "audio_num_attention_heads"),
     )
     component_load_dtype_defaults = {"audio_vae": torch.float32}
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     pipeline_io_contract = audio_video_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
         geometry_source=GeometrySource.CONFIGURED,

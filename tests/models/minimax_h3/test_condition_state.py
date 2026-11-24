@@ -55,8 +55,8 @@ def test_conditioned_adapters_declare_preparer_but_t2va_keeps_identity() -> None
     assert isinstance(fl2va.build_condition_state_preparer(), MiniMaxH3ConditionStatePreparer)
     assert isinstance(ref2va.build_condition_state_preparer(), MiniMaxH3ConditionStatePreparer)
     assert MiniMaxH3ConditionStatePreparer.required_components == ("scheduler",)
+    assert MiniMaxH3T2VAAdapter.preprocess_cache_version == "minimax-h3-t2va-eos-v4"
     assert {
-        MiniMaxH3T2VAAdapter.preprocess_cache_version,
         MiniMaxH3FL2VAAdapter.preprocess_cache_version,
         MiniMaxH3Ref2VAAdapter.preprocess_cache_version,
     } == {"minimax-h3-v3"}

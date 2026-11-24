@@ -105,7 +105,16 @@ def test_preprocess_uses_exact_workflow_inputs_and_b1(
         adapter.preprocess_func(prompt=["one", "two"], height=64, width=96, num_frames=5)
 
 
-def test_v2_last_only_condition_reaches_h3_preprocess_through_arrow(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "caption",
+    [
+        "Reveal what led to this ending.",
+        MiniMaxH3FL2VAAdapter.sft_condition_dropout_policy.empty_prompt,
+    ],
+)
+def test_v2_last_only_condition_reaches_h3_preprocess_through_arrow(
+    tmp_path, monkeypatch, caption
+) -> None:
     """The complete public-schema/cache path preserves a sparse last-frame binding."""
     ending_path = tmp_path / "ending.png"
     Image.new("RGB", (16, 16), color=(12, 34, 56)).save(ending_path)
@@ -113,7 +122,7 @@ def test_v2_last_only_condition_reaches_h3_preprocess_through_arrow(tmp_path, mo
         {
             "schema_version": 2,
             "input": {
-                "prompt": "Reveal what led to this ending.",
+                "prompt": caption,
                 "media": [
                     {
                         "type": "image",
@@ -167,6 +176,7 @@ def test_v2_last_only_condition_reaches_h3_preprocess_through_arrow(tmp_path, mo
     assert len(calls) == 2
     workflow, values = calls[0]
     assert workflow == "fl2va"
+    assert values["prompt"] == caption
     assert "image" not in values
     assert isinstance(values["last_image"], Image.Image)
     assert values["last_image"].size == (16, 16)
@@ -196,7 +206,12 @@ def test_preprocess_adds_outer_batch_to_arrow_cache_fields(monkeypatch) -> None:
     assert result["height"] == [64]
 
 
-def test_ref_preprocess_builds_ordered_pinned_objects_without_returning_them(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "caption", ["describe", MiniMaxH3Ref2VAAdapter.sft_condition_dropout_policy.empty_prompt]
+)
+def test_ref_preprocess_builds_ordered_pinned_objects_without_returning_them(
+    monkeypatch, caption
+) -> None:
     constructed: List[Any] = []
 
     def reference_type(media_type: str):
@@ -234,7 +249,7 @@ def test_ref_preprocess_builds_ordered_pinned_objects_without_returning_them(mon
     ]
 
     result = adapter.preprocess_func(
-        prompt=["describe"],
+        prompt=[caption],
         references=[references],
         reference_manifest=["manifest"],
         height=64,
@@ -243,6 +258,9 @@ def test_ref_preprocess_builds_ordered_pinned_objects_without_returning_them(mon
     )
 
     assert [media_type for media_type, _ in constructed] == ["image", "video", "audio"]
+    assert encoded_inputs["prompt"] == caption
+    assert constructed[1][1]["audio"] is references[1]["audio"]
+    assert constructed[1][1]["sample_rate"] == 32000
     assert constructed[1][1]["frames"] == "frames"
     assert "video" not in constructed[1][1]
     assert [ref.media_type for ref in encoded_inputs["references"]] == [

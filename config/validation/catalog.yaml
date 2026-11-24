@@ -18489,3 +18489,118 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: sft-av-caption-dropout
+  covers:
+  - sft.dropout.av
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/models/ltx2/ltx2_i2av.py
+  - src/flow_factory/models/ltx2/ltx2_t2av.py
+  - src/flow_factory/models/minimax_h3/adapters.py
+  - src/flow_factory/models/minimax_h3/workflow.py
+  - src/flow_factory/models/wan/wan2_i2v.py
+  - src/flow_factory/models/wan/wan2_t2v.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/validation/test_h3_condition_dropout.py
+  fixture: Run native Qwen3-VL and H3 DiT on all three presentations with the released tokenizer and processor;
+    compare retained reference features, target rows and nonzero gradients.
+  fixture_kind: model_structure
+  qa: Q1
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Run native Qwen3-VL and H3 DiT on all three presentations with the released tokenizer
+      and processor; compare retained reference features, target rows and nonzero gradients.
+    reward: none
+  artifacts:
+  - tests/validation/test_h3_condition_dropout.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths:
+    - FF_VALIDATION_H3_CHECKPOINT
+- id: sft-av-dropout-contracts
+  covers:
+  - sft.dropout.av_contracts
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/models/ltx2/ltx2_i2av.py
+  - src/flow_factory/models/ltx2/ltx2_t2av.py
+  - src/flow_factory/models/minimax_h3/adapters.py
+  - src/flow_factory/models/minimax_h3/workflow.py
+  - src/flow_factory/models/wan/wan2_i2v.py
+  - src/flow_factory/models/wan/wan2_t2v.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/models/minimax_h3/test_sft_condition_dropout.py
+  - tests/models/minimax_h3/test_condition_state.py
+  - tests/models/ltx2/test_ltx2_adapter_init.py::test_caption_dropout_rebuilds_both_ltx2_connector_streams
+  - tests/models/test_wan_output_codec.py::test_wan_v2_condition_cache_keeps_ordered_pixels_through_prepare
+  - tests/models/minimax_h3/test_workflow_execution.py::test_ref_preprocess_builds_ordered_pinned_objects_without_returning_them
+  - tests/models/minimax_h3/test_workflow_execution.py::test_v2_last_only_condition_reaches_h3_preprocess_through_arrow
+  fixture: Verify native T2VA EOS, LTX audio/video connector branches, Wan endpoint pixels and retained
+    H3 references through Arrow.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Verify native T2VA EOS, LTX audio/video connector branches, Wan endpoint pixels and retained
+      H3 references through Arrow.
+    reward: none
+  artifacts:
+  - tests/models/minimax_h3/test_sft_condition_dropout.py
+  - tests/models/minimax_h3/test_condition_state.py
+  - tests/models/ltx2/test_ltx2_adapter_init.py
+  - tests/models/test_wan_output_codec.py
+  - tests/models/minimax_h3/test_workflow_execution.py
+  cost_seconds: 25
+  resources:
+    gpus: 0
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      CUDA_VISIBLE_DEVICES: '-1'
+    model_paths: []

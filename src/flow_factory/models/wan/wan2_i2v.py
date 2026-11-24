@@ -62,6 +62,7 @@ from ..parallelism.context import (
 from ..parallelism.plan import ConditionalEntry, sequence_parallel_enabled
 from ..parallelism.tensor import ShardedAcrossHeadRMSNorm, SharedInputColwiseParallel
 from ..pipeline_contracts import video_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._conditioning import (
     WanI2VConditionStatePreparer,
     append_wan_i2v_last_images,
@@ -141,6 +142,7 @@ class Wan2_I2V_Adapter(BaseAdapter):
         "vae": torch.float32,
         "image_encoder": torch.float32,
     }
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     pipeline_io_contract = video_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
         input_image_min_count=1,

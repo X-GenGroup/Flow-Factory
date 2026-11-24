@@ -1482,6 +1482,24 @@ interactions:
 
 focused_owners:
   - paths:
+    - src/flow_factory/models/minimax_h3/workflow.py
+    symbols: ['preprocess_h3_workflow']
+    requires: ['sft.dropout.av']
+    reason: Verify native text, keyframe and ordered reference layouts when H3 assembles its preprocessing arguments.
+  - paths:
+    - src/flow_factory/models/minimax_h3/adapters.py
+    symbols: ['*.sft_condition_dropout_policy', 'MiniMaxH3T2VAAdapter.preprocess_cache_version', '<import:flow_factory.models.sft_dropout.CAPTION_DROPOUT>', '<import:flow_factory.models.sft_dropout.CaptionDropoutPolicy>']
+    requires: ['sft.dropout.av']
+    reason: Qualify the released H3 EOS tokenizer and layout at the declared T2VA cache version.
+  - paths:
+    - src/flow_factory/models/ltx2/ltx2_i2av.py
+    - src/flow_factory/models/ltx2/ltx2_t2av.py
+    - src/flow_factory/models/wan/wan2_i2v.py
+    - src/flow_factory/models/wan/wan2_t2v.py
+    symbols: ['*.sft_condition_dropout_policy', '<import:flow_factory.models.sft_dropout.CAPTION_DROPOUT>']
+    requires: ['sft.dropout.av']
+    reason: Retain native caption and protected frame/AV handling for per-adapter policy declarations.
+  - paths:
     - src/flow_factory/models/flux/flux1.py
     - src/flow_factory/models/flux/flux1_kontext.py
     - src/flow_factory/models/flux/flux2.py

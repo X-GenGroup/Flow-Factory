@@ -68,6 +68,7 @@ from ..abc import BaseAdapter
 from ..output_state import DecodedMediaBatch, EncodedOutputState
 from ..parallelism.context import ContextParallelBoundary, ContextParallelCapability
 from ..pipeline_contracts import IMAGE_FORMAT, audio_video_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._common import (
     LTX2_COMPONENT_ORDER,
     attach_ltx2_state_masks,
@@ -195,6 +196,7 @@ class LTX2_I2AV_Adapter(BaseAdapter):
         ("num_attention_heads", "audio_num_attention_heads"),
     )
     component_load_dtype_defaults = {"audio_vae": torch.float32}
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     pipeline_io_contract = audio_video_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
         input_rules=(

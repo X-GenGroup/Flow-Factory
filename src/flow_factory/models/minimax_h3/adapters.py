@@ -60,6 +60,7 @@ from ..pipeline_contracts import (
     audio_video_output_contract,
 )
 from ..runtime import ModularPipelineRuntime
+from ..sft_dropout import CAPTION_DROPOUT, CaptionDropoutPolicy
 from ._chunking import (
     H3_MAX_LORA_PROJECTION_TOKENS,
     H3_MAX_ROTARY_TOKENS,
@@ -113,6 +114,7 @@ class _MiniMaxH3WorkflowAdapter:
     to chunk LoRA projections under FSDP2.
     """
 
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     trajectory_component_order: ClassVar[Tuple[str, ...]] = ("video", "audio")
     differentiable_decode_fields = ("video", "audio")
     differentiable_decode_modules = ("vae", "audio_vae")
@@ -546,12 +548,18 @@ class _MiniMaxH3WorkflowAdapter:
 class MiniMaxH3T2VAAdapter(_MiniMaxH3WorkflowAdapter, BaseAdapter):
     """Load the workflow-pruned MiniMax H3 text-to-video-audio partition."""
 
+    # T2VA has no reference prefix or implicit tokenizer special tokens. The
+    # checkpoint's EOS gives a caption-free Qwen presentation one valid row.
+    sft_condition_dropout_policy = CaptionDropoutPolicy(
+        empty_prompt="<|im_end|>", revision="h3-t2va-eos-v1"
+    )
     pipeline_io_contract = audio_video_output_contract(
         negative_prompt=NegativePromptPolicy.UNSUPPORTED,
         geometry_source=GeometrySource.CONFIGURED,
         batch_capability=BatchCapability.SINGLE_SAMPLE,
     )
 
+    preprocess_cache_version: ClassVar[str] = "minimax-h3-t2va-eos-v4"
     workflow: ClassVar[str] = "t2va"
     context_parallel_component_names = ("transformer",)
     transformer_component_name: ClassVar[str] = "transformer"

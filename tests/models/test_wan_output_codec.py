@@ -544,8 +544,12 @@ def test_wan_i2v_online_prepare_latents_reuses_condition_mode_path() -> None:
     assert adapter.vae.posterior.generators == []
 
 
+@pytest.mark.parametrize(
+    "caption", ["first and last", Wan2_I2V_Adapter.sft_condition_dropout_policy.empty_prompt]
+)
 def test_wan_v2_condition_cache_keeps_ordered_pixels_through_prepare(
     tmp_path: Path,
+    caption: str,
 ) -> None:
     Image.new("RGB", (4, 4), color="red").save(tmp_path / "first.png")
     Image.new("RGB", (4, 4), color="blue").save(tmp_path / "last.png")
@@ -553,7 +557,7 @@ def test_wan_v2_condition_cache_keeps_ordered_pixels_through_prepare(
         {
             "schema_version": 2,
             "input": {
-                "prompt": "first and last",
+                "prompt": caption,
                 "media": [
                     {"type": "image", "path": "first.png"},
                     {"type": "image", "path": "last.png"},
