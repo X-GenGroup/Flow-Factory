@@ -62,7 +62,7 @@ from ..configured_image_output import (
     EncodedImageTensor,
 )
 from ..pipeline_contracts import image_output_contract
-from ..sft_dropout import CAPTION_DROPOUT
+from ..sft_dropout import SEPARABLE_CAPTION_DROPOUT
 from ._flux2_parallel import Flux2ParallelAdapterMixin
 from ._output import encode_flux2_output_images, prepare_flux2_condition_latents
 from .flux2 import MAX_SINGLE_BLOCKS
@@ -89,7 +89,7 @@ CONDITION_IMAGE_SIZE = (1024, 1024)
 
 class Flux2KleinAdapter(Flux2ParallelAdapterMixin, ConfiguredImageOutputAdapterMixin, BaseAdapter):
 
-    sft_condition_dropout_policy = CAPTION_DROPOUT
+    sft_condition_dropout_policy = SEPARABLE_CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
     _flux2_guidance_embeds = False
     supports_diffusers_cache = True

@@ -801,3 +801,153 @@ def test_builder_delegates_distributed_condition_cache_to_rank_safe_orchestrator
     assert loader.sampler.num_replicas == 2
     assert loader.sampler.rank == 1
     assert accelerator.prepare_calls == 0
+
+
+def test_sft_raw_cached_epoch_and_cache_reuse(tmp_path):
+    from flow_factory.data_utils.sft_conditions import encode_raw_sft_conditions
+    from flow_factory.models.sft_dropout import CAPTION_DROPOUT
+
+    class Encoder:
+        calls = 0
+
+        def encode(self, prompt, **kwargs):
+            self.calls += 1
+            return {"prompt_embeds": torch.tensor([[len(s), 1] for s in prompt])}
+
+    sources = []
+    for source_id, name in enumerate(("edits", "more")):
+        directory = tmp_path / name
+        directory.mkdir()
+        _write_image(directory / "target.png", 40)
+        _write_manifest(
+            directory, [_demonstration_row(f"{name}-{i}", "target.png") for i in range(5)]
+        )
+        sources.append(_source(name, directory, source_id))
+
+    enc = Encoder()
+    config = _config(tmp_path, sources, per_device_batch_size=3)
+    config.training_args.condition_dropout = 0.5
+    config.training_args.trainer_type = "sft"
+
+    def build(raw):
+        config.data_args.enable_preprocess = not raw
+        return build_offline_train_dataloader(
+            config,
+            _Accelerator(),
+            enc.encode,
+            supervision_type="demonstration",
+            pipeline_io_contract=_TEXT_TO_IMAGE_CONTRACT,
+            sft_policy=CAPTION_DROPOUT,
+        )
+
+    cached = build(False)
+    assert all(len(ds.sft_conditions.alternatives) == 1 for ds in cached.dataset.datasets)
+    first_calls = enc.calls
+    hit = build(False)
+    raw = build(True)
+    assert enc.calls == first_calls
+    decisions = []
+    for epoch in (0, 1, 1):
+        masks = {}
+        for loader in (cached, hit, raw):
+            loader.sampler.set_epoch(epoch)
+        for expected, reused, actual in zip(cached, hit, raw, strict=True):
+            assert expected.record_ids == reused.record_ids == actual.record_ids
+            assert expected.model_inputs == actual.model_inputs
+            assert (
+                expected.condition["_sft_mask"]
+                == reused.condition["_sft_mask"]
+                == actual.condition["_sft_mask"]
+            )
+            selected = encode_raw_sft_conditions(actual.condition["_sft_raw"], enc.encode, {})
+            torch.testing.assert_close(
+                selected["prompt_embeds"], expected.condition["prompt_embeds"]
+            )
+            for idx, mask in enumerate(actual.condition["_sft_mask"]):
+                masks[actual.record_ids[idx]] = bool(mask)
+                assert (selected["prompt_embeds"][idx, 0] == 0) == bool(mask)
+                assert (
+                    actual.output.target_media[idx][0].payload.tobytes()
+                    == expected.output.target_media[idx][0].payload.tobytes()
+                )
+        assert set(masks.values()) == {False, True}
+        decisions.append(masks)
+    assert decisions[0] != decisions[1] == decisions[2]
+
+
+def test_sft_alternate_identity_includes_reference_order_and_negative():
+    from dataclasses import dataclass
+
+    from flow_factory.data_utils.schema import MediaAsset, NormalizedModelInput
+    from flow_factory.data_utils.sft_conditions import absent_caption_records
+
+    @dataclass
+    class Row:
+        model_input: NormalizedModelInput
+
+    a, b = (MediaAsset("image", path) for path in ("a.png", "b.png"))
+    rows = [
+        Row(NormalizedModelInput(prompt, negative, refs))
+        for prompt, negative, refs in [
+            ("a", "neg", (a, b)),
+            ("b", "neg", (a, b)),
+            ("a", "neg", (b, a)),
+            ("a", "other", (a, b)),
+        ]
+    ]
+    alternatives, indices = absent_caption_records(rows, "")
+    assert indices == [0, 0, 1, 2]
+    assert all(row.model_input.prompt == "" for row in alternatives)
+
+
+def test_sft_independent_caption_overlay_preserves_media_columns(tmp_path):
+    from dataclasses import replace
+
+    from flow_factory.models.sft_dropout import SEPARABLE_CAPTION_DROPOUT
+
+    directory = tmp_path / "edits"
+    directory.mkdir()
+    rows = []
+    for i in (1, 2):
+        _write_image(directory / f"{i}.png", i * 20)
+        row = _demonstration_row(f"instruction-{i}", f"{i}.png")
+        row["input"]["media"] = [{"type": "image", "path": f"{i}.png"}]
+        rows.append(row)
+    _write_manifest(directory, rows)
+
+    class Encoder:
+        def encode(self, prompt, images=None):
+            result = {"embeds": torch.tensor([[len(text)] for text in prompt])}
+            if images is not None:
+                result["ref_tokens"] = torch.tensor(
+                    [[refs[0].getpixel((0, 0))[0]] for refs in images]
+                )
+            return result
+
+    config = _config(tmp_path, [_source("edits", directory, 0)])
+    config.training_args.condition_dropout = 1
+    contract = replace(
+        _TEXT_TO_IMAGE_CONTRACT,
+        input_media=InputMediaSpec(
+            rules=(InputMediaRule(format=_IMAGE_FORMAT, min_count=1, max_count=1),),
+            binding=InputMediaBinding.GROUPED_BY_TYPE,
+            order=InputMediaOrder.WITHIN_TYPE,
+        ),
+    )
+    loader = build_offline_train_dataloader(
+        config,
+        _Accelerator(),
+        Encoder().encode,
+        supervision_type="demonstration",
+        pipeline_io_contract=contract,
+        sft_policy=SEPARABLE_CAPTION_DROPOUT,
+        shuffle=False,
+    )
+    alt = loader.dataset.datasets[0].sft_conditions.alternatives
+    assert (
+        len(alt) == 1 and "images" not in alt.column_names and "ref_tokens" not in alt.column_names
+    )
+    assert [(b.condition["embeds"].item(), b.condition["ref_tokens"].item()) for b in loader] == [
+        (0, 20),
+        (0, 40),
+    ]

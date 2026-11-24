@@ -314,6 +314,8 @@ full schema, media roots, and evaluation splits.
 
 ## Offline SFT and Preference Data
 
+SFT defaults to `train.condition_dropout: 0.1`. The [SFT conditioning guide](guidance/training/sft-conditioning.md) lists each model’s eligible inputs, native recipes and checkpoint migration.
+
 SFT and offline DPO use strict JSONL with `schema_version: 2`. Public media objects use `type` as
 their sole discriminator:
 

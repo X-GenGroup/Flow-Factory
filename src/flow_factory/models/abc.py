@@ -145,6 +145,7 @@ from .precision import (
     validate_dtype_policy_selectors,
 )
 from .runtime import ClassicPipelineRuntime, ComponentRuntime
+from .sft_dropout import SFTConditionDropoutPolicy
 from .variants import DEFAULT_BASE_VARIANT, ComponentVariantRegistry, ComponentVariantSpec
 
 # Constants
@@ -218,6 +219,7 @@ class BaseAdapter(ABC):
 
     _DTYPE_MAP = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}
     component_load_dtype_defaults: ClassVar[Any] = None
+    sft_condition_dropout_policy: ClassVar[SFTConditionDropoutPolicy | None] = None
 
     lora_keys: List[str] = [
         "lora_A",

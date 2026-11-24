@@ -381,7 +381,11 @@ def test_offline_trainers_build_unprepared_distributed_loaders(
     supervision_type: str,
 ) -> None:
     trainer = object.__new__(trainer_type)
-    trainer.config = object()
+    trainer.config = SimpleNamespace(
+        training_args=SimpleNamespace(condition_dropout=0.0),
+        model_args=SimpleNamespace(model_name_or_path="fixture"),
+        data_args=SimpleNamespace(enable_preprocess=True),
+    )
     trainer.accelerator = _Accelerator([])
     trainer.adapter = SimpleNamespace(
         preprocess_func=object(),
@@ -406,6 +410,7 @@ def test_offline_trainers_build_unprepared_distributed_loaders(
         "accelerator": trainer.accelerator,
         "preprocess_func": trainer.adapter.preprocess_func,
         "supervision_type": supervision_type,
+        **({"sft_policy": None} if trainer_type is SFTTrainer else {}),
         "pipeline_io_contract": trainer.adapter.effective_pipeline_io_contract,
     }
     assert trainer.accelerator.prepare_calls == 0
@@ -640,3 +645,25 @@ def test_offline_trainers_reject_the_other_supervision_branch() -> None:
 
     assert sft_adapter.train_calls == 0
     assert dpo_adapter.train_calls == 0
+
+
+def test_sft_dropout_execution_identity_preserves_old_cached_zero(monkeypatch):
+    from flow_factory.models.sft_dropout import CAPTION_DROPOUT
+    from flow_factory.trainers.abc import BaseTrainer
+
+    trainer = object.__new__(SFTTrainer)
+    trainer.adapter = SimpleNamespace(sft_condition_dropout_policy=CAPTION_DROPOUT)
+    trainer.config = SimpleNamespace(data_args=SimpleNamespace(enable_preprocess=True))
+    block = {}
+    monkeypatch.setattr(
+        BaseTrainer, "runtime_execution_identity_payload", lambda self: {"training": dict(block)}
+    )
+    legacy = trainer.runtime_execution_identity_payload()
+    block["condition_dropout"] = 0
+    assert trainer.runtime_execution_identity_payload() == legacy
+    block["condition_dropout"] = 0.1
+    enabled = trainer.runtime_execution_identity_payload()
+    assert enabled["training"]["condition_dropout"] == 0.1
+    assert enabled["sft_condition_policy_revision"] == CAPTION_DROPOUT.revision
+    trainer.config.data_args.enable_preprocess = False
+    assert trainer.runtime_execution_identity_payload() != enabled

@@ -645,6 +645,8 @@ empty (a dataset with fewer rows than ranks) writes a zero-row part in the same 
 datasets preprocess on any number of ranks. `force_reprocess` defaults to `true`, which rebuilds the
 cache on every launch; set it to `false` to reuse a cache whose fingerprint matches.
 
+SFT can alternatively select the condition per training record and encode it on demand with `data.enable_preprocess: false`. See [SFT condition dropout](sft-conditioning.md).
+
 Prompt encoders, condition VAEs, and processors are preprocessing components. Online RL can
 offload them after cache creation because optimization consumes cached conditions. Offline SFT and
 offline DPO reload any condition-preparer and output-codec components declared by the adapter.

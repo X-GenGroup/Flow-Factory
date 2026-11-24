@@ -21,6 +21,7 @@ from typing import Sequence, Union
 from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
 
 from .offline_dataset import OfflineCollator, OfflineDataset
+from .sampler import OfflineConditionSampler
 
 OfflineDatasetCollection = Union[OfflineDataset, Sequence[OfflineDataset]]
 
@@ -105,7 +106,12 @@ def build_offline_dataloader(
     _validate_unique_source_identities(offline_datasets)
 
     concatenated = ConcatDataset(offline_datasets)
-    sampler = DistributedSampler(
+    sampler_type = (
+        OfflineConditionSampler
+        if any(ds.sft_conditions is not None for ds in offline_datasets)
+        else DistributedSampler
+    )
+    sampler = sampler_type(
         concatenated,
         num_replicas=num_replicas,
         rank=rank,

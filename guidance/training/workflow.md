@@ -202,6 +202,8 @@ data:
 
 ## Offline Dataset Training
 
+For cached and on-demand SFT, see [model-specific condition dropout](sft-conditioning.md).
+
 SFT and offline DPO use strict V2 JSONL manifests described in the
 [dataset guide](datasets.md#offline-v2-records). Their finite loader is constructed with PyTorch's
 official `DistributedSampler`, even for `num_replicas=1`, and is not prepared by Accelerator:
@@ -209,7 +211,7 @@ official `DistributedSampler`, even for `num_replicas=1`, and is not prepared by
 ```text
 sampler.set_epoch(data_epoch)
 for batch in dataloader:
-    condition = cached prompt/input tensors
+    condition = selected cached inputs or SFT inputs for on-demand encoding
     output = freshly decoded target or chosen/rejected media
     trainer.optimize_batch(batch)  # prepares condition once inside the microbatch
 data_epoch += 1  # only after clean exhaustion

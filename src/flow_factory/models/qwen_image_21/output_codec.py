@@ -110,7 +110,14 @@ def normalize_condition_img_shapes(
     if (
         batch_size == 1
         and isinstance(value, Sequence)
-        and (not value or (isinstance(value[0], Sequence) and len(value[0]) == 3))
+        and (
+            not value
+            or (
+                isinstance(value[0], Sequence)
+                and len(value[0]) == 3
+                and all(isinstance(dimension, int) for dimension in value[0])
+            )
+        )
     ):
         value = [value]
     if not isinstance(value, Sequence) or len(value) != batch_size:
