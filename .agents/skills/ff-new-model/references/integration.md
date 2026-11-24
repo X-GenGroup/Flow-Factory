@@ -116,6 +116,11 @@ An adapter that claims SFT/offline-DPO support must provide every boundary below
 8. An offline flow-matching objective reducer only when modality aggregation differs from online
    trajectory reduction.
 
+For planned P23, document each checkpoint/task's SFT conditioning dropout disposition during
+design. Follow the [model admission checklist](../../../../roadmap/milestones/v0.6x-sft.md#new-model-admission)
+for recipe provenance, eligible segments, cached/on-demand inputs and branch-level evidence.
+Once the runtime ships, exercise the policy through both SFT input paths.
+
 Input-condition caches never contain target/chosen/rejected pixels or latent states. Shared numeric
 transforms may serve condition and output paths, but posterior `sample` versus `argmax` policy stays
 explicit at the semantic boundary. Candidate output context cannot overwrite input-owned fields.
