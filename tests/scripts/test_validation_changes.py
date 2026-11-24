@@ -378,7 +378,11 @@ def test_reviewed_leaf_helper_keeps_direct_cases_and_unknown_edits_broad():
         broad = planner.requirements_for(scope, {}, catalog, policy)
         assert "flux3-guard-ordered-full" in broad["mandatory"]
     scope["semantic_symbols"][path] = ["attention_vjp_reference"]
-    entry = next(row for row in policy["focused_owners"] if row.get("test_cases"))
+    entry = next(
+        row
+        for row in policy["focused_owners"]
+        if path in row["paths"] and "attention_vjp_reference" in row.get("symbols", ())
+    )
     entry["test_cases"] = ["missing-case"]
     with pytest.raises(ValueError, match="Unknown reviewed test consumers"):
         planner.requirements_for(scope, {}, catalog, policy)
@@ -461,7 +465,7 @@ def test_dropout_import_partition_requires_an_exact_new_binding_and_an_unchanged
     )
 
     def symbols(text):
-        return changes.semantic_changes(path, original, text, bindings, eligible_imports={name})
+        return changes.semantic_changes(path, original, text, bindings, eligible_symbols={name})
 
     assert symbols(changed) == [name, "A.sft_condition_dropout_policy"]
     existing_consumer = "\ndef inference(): return CAPTION_DROPOUT\n"
@@ -470,7 +474,7 @@ def test_dropout_import_partition_requires_an_exact_new_binding_and_an_unchanged
         original + existing_consumer,
         changed + existing_consumer,
         bindings,
-        eligible_imports={name},
+        eligible_symbols={name},
     )
     for other in (
         changed + "register()\n",
@@ -507,3 +511,46 @@ def test_sft_declaration_does_not_narrow_an_unrelated_forward_or_module_change()
             "model.flux.complete_tp_sft"
             in planner.infer_requirements(scope, policy, {})["obligations"]
         )
+
+
+def test_mask_forwarding_must_leave_the_entire_previous_forward_intact(bindings):
+    path = "src/flow_factory/models/bagel/bagel.py"
+    marker = "BagelAdapter.forward:sft-mask-argument"
+    original = (
+        "class BagelAdapter:\n    def forward(self, x):\n        return self._forward_rebuild(x)\n"
+    )
+    changed = original.replace("self, x", "self, x, sft_condition_masks=None").replace(
+        "_forward_rebuild(x)", "_forward_rebuild(x, sft_condition_masks=sft_condition_masks)"
+    )
+
+    def symbols(text):
+        return changes.semantic_changes(path, original, text, bindings, eligible_symbols={marker})
+
+    assert symbols(changed) == [marker]
+    for mutation in (
+        changed.replace("_forward_rebuild(x,", "_forward_rebuild(x + 1,"),
+        changed.replace("_forward_rebuild(", "_other("),
+        changed.replace("=sft_condition_masks)", "=preprocess(sft_condition_masks))"),
+        changed.replace("=None", "=True"),
+        changed.replace("return", "save_checkpoint()\n        return"),
+    ):
+        assert symbols(mutation) == ["BagelAdapter.forward"]
+
+
+def test_reviewed_appended_tests_do_not_hide_shared_helpers_or_existing_edits(bindings):
+    path = "tests/test_drop.py"
+    marker = "<appended-tests:_helper,test_dropout>"
+    original = "def test_existing():\n    assert True\n"
+    appended = "\ndef _helper():\n    return 3\n\ndef test_dropout():\n    assert _helper() == 3\n"
+
+    def symbols(text):
+        return changes.semantic_changes(path, original, text, bindings, eligible_symbols={marker})
+
+    assert symbols(original + appended) == [marker]
+    for mutation in (
+        original.replace("True", "False") + appended,
+        appended + original,
+        original + appended + "\ndef test_other():\n    assert False\n",
+        original + appended + "\nregister()\n",
+    ):
+        assert marker not in symbols(mutation)

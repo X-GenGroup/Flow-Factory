@@ -420,15 +420,16 @@ def refine_routing(
     for path, pair in snapshot["pairs"].items():
         if not path.endswith(".py") or (path in snapshot["mode_changes"] and pair[0] is not None):
             continue
-        eligible_imports = {
+        eligible_symbols = {
             name
             for rule in policy.get("focused_owners", [])
             if matches(path, rule["paths"])
             for name in rule["symbols"]
-            if name.startswith("<import:")
+            if name.startswith(("<import:", "<appended-tests:"))
+            or name.endswith(":sft-mask-argument")
         }
         semantic[path] = validation_changes.semantic_changes(
-            path, *pair, bindings, eligible_imports=eligible_imports
+            path, *pair, bindings, eligible_symbols=eligible_symbols
         )
         if not semantic[path] and pair[1] is not None:
             imports.append(path)

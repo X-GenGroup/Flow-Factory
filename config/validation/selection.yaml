@@ -10,6 +10,10 @@ static_paths:
   - assets/**
 owners:
   - paths:
+    - src/flow_factory/models/sft_recipes.py
+    requires: ['sft.dropout.packed_contracts', 'sft.dropout.bagel', 'sft.dropout.sensenova']
+    reason: Native conditional and numeric segment probabilities drive the distributed packed consumers.
+  - paths:
     - src/flow_factory/models/sft_dropout.py
     requires: ['sft.dropout.images']
     reason: Record-addressed numeric selection and native admission are exercised through the model policy.
@@ -1481,6 +1485,49 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths:
+    - tests/models/test_sensenova.py
+    symbols: ['<appended-tests:test_sensenova_sft_uses_native_cfg_prefix>']
+    test_cases: ['sft-packed-dropout-contracts']
+    requires: ['sft.dropout.packed_contracts']
+    reason: Run each appended test through its own native proof. Edits to any previous AST node retain the original consumer routes.
+  - paths:
+    - tests/distributed/test_sensenova_context_parallel.py
+    symbols: ['<appended-tests:_sensenova_sft_fsdp_worker,test_cuda_sensenova_sft_divergent_dropout_fsdp>']
+    test_cases: ['sft-sensenova-dropout-fsdp2']
+    requires: ['sft.dropout.sensenova']
+    reason: Run each appended test through its own native proof. Edits to any previous AST node retain the original consumer routes.
+  - paths:
+    - tests/distributed/test_bagel_parallel.py
+    symbols: ['<appended-tests:_bagel_sft_fsdp_worker,test_bagel_sft_independent_visual_streams,test_cuda_bagel_sft_divergent_dropout_fsdp>']
+    test_cases: ['sft-bagel-dropout-fsdp2', 'sft-packed-dropout-contracts']
+    requires: ['sft.dropout.bagel', 'sft.dropout.packed_contracts']
+    reason: Run each appended test through its own native proof. Edits to any previous AST node retain the original consumer routes.
+  - paths:
+    - src/flow_factory/models/sensenova/pipeline.py
+    symbols: ['SenseNovaImagePrefix.discard_visual_embeddings']
+    requires: ['sft.dropout.packed_contracts', 'sft.dropout.sensenova']
+    reason: Verify retained vision-encoder participation when the selected prefix omits visual embeddings.
+  - paths:
+    - src/flow_factory/models/sensenova/modeling/neo_unify/modeling_neo_chat.py
+    symbols: ['NEOChatModel._build_it2i_inputs']
+    requires: ['sft.dropout.packed_contracts', 'sft.dropout.sensenova']
+    reason: Verify instruction and reference placeholder trimming before constructing native conditioning.
+  - paths:
+    - src/flow_factory/models/bagel/modeling/bagel/bagel.py
+    symbols: ['Bagel.prepare_prompts']
+    requires: ['sft.dropout.packed_contracts', 'sft.dropout.bagel']
+    reason: Packed prompt positions and supervised image records must preserve model reference semantics.
+  - paths:
+    - src/flow_factory/models/sensenova/sensenova.py
+    symbols: ['SenseNovaAdapter._build_context', 'SenseNovaAdapter._build_i2i_context', 'SenseNovaAdapter._build_it2i_branch', 'SenseNovaAdapter.sft_condition_dropout_policy', 'SenseNovaAdapter.forward:sft-mask-argument', '<import:flow_factory.models.sft_recipes.SenseNovaDropout>']
+    requires: ['sft.dropout.packed_contracts', 'sft.dropout.sensenova']
+    reason: Packed context construction must preserve the native reference including divergent masks on FSDP peers. Other forward logic retains the broader family route.
+  - paths:
+    - src/flow_factory/models/bagel/bagel.py
+    symbols: ['BagelAdapter._append_sft_image_round', 'BagelAdapter._assert_variable_count_supported', 'BagelAdapter._build_gen_context', 'BagelAdapter._forward_rebuild', 'BagelAdapter._prepare_gen_inputs', 'BagelAdapter._resolve_condition_images_for_packing', 'BagelAdapter._update_context_text', 'BagelAdapter.sft_condition_dropout_policy', 'BagelAdapter.forward:sft-mask-argument', '<import:flow_factory.models.sft_recipes.BagelDropout>']
+    requires: ['sft.dropout.packed_contracts', 'sft.dropout.bagel']
+    reason: Packed context construction must preserve the native reference including divergent masks on FSDP peers. Other forward logic retains the broader family route.
   - paths:
     - src/flow_factory/models/minimax_h3/workflow.py
     symbols: ['preprocess_h3_workflow']
