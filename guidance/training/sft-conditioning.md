@@ -29,7 +29,7 @@ train:
 
 **Numeric and native give different editing recipes.** On the qualified SenseNova 8B I2I recipes, `native` gives 80% full conditioning, 10% images only and 10% neither. Numeric `0.1` gives 90%, 5% and 5%. On BAGEL, the published recipe uses independent drop probabilities of 0.1 per eligible caption and 0.3 per eligible ViT or VAE reference segment. Numeric mode first chooses whether to drop anything, then samples among the nonempty masks in the recipe's proportions.
 
-Native recipes are qualified for `ByteDance-Seed/BAGEL-7B-MoT`, `sensenova/SenseNova-U1-8B-MoT` and `sensenova/SenseNova-U1.5-8B-MoT-SFT`. Other checkpoints can use a numeric probability. The [P23 source table](../../roadmap/milestones/v0.6x-sft.md#p23b) links the training recipes and inference implementations behind these choices.
+Native recipes are qualified for `ByteDance-Seed/BAGEL-7B-MoT`, `sensenova/SenseNova-U1-8B-MoT` and `sensenova/SenseNova-U1.5-8B-MoT-SFT`. Other built-in checkpoints can use a numeric probability. A third-party adapter can set `train.condition_dropout: 0` until it declares a policy. The [P23 source table](../../roadmap/milestones/v0.6x-sft.md#p23b) links the training recipes and inference implementations behind these choices.
 
 ### Cache, resume and diagnostics
 

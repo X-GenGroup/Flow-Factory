@@ -34,6 +34,11 @@ def _worker(rank, store, output, options):
         trainer = load_trainer(config)
         result["runtime"] = runtime_observation(trainer.accelerator)
         assert trainer.accelerator.is_fsdp2
+        assert config.model_args.model_type == "wan2_t2v"
+        assert config.training_args.trainer_type == "sft"
+        assert config.parallelism_args.effective_context_parallel_size == 2
+        assert trainer.accelerator.mixed_precision == "bf16"
+        result["execution_capability"] = "wan-sft-ulysses-bf16-v1"
         batches, updates = [], []
         optimize = trainer.optimize_batch
         step = trainer._apply_optimizer_step

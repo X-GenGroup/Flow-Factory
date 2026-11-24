@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
 import importlib.util
 from typing import Callable
 
@@ -269,87 +270,6 @@ def added_import_symbols(old: ast.Module, new: ast.Module, eligible: set[str]) -
     return set()
 
 
-def sft_forward_extension(before: ast.Module, after: ast.Module, qualified: str) -> bool:
-    """Prove existing forward code survives adding the optional SFT mask input."""
-    if qualified not in {"BagelAdapter.forward", "SenseNovaAdapter.forward"}:
-        return False
-    owner, method = qualified.split(".")
-
-    def find(tree):
-        return next(
-            (
-                fn
-                for cls in tree.body
-                if isinstance(cls, ast.ClassDef) and cls.name == owner
-                for fn in cls.body
-                if isinstance(fn, ast.FunctionDef) and fn.name == method
-            ),
-            None,
-        )
-
-    old, new = find(before), copy.deepcopy(find(after))
-    if not old or not new:
-        return False
-    arg = "sft_condition_masks"
-    if not (
-        new.args.args
-        and new.args.args[-1].arg == arg
-        and new.args.defaults
-        and isinstance(new.args.defaults[-1], ast.Constant)
-        and new.args.defaults[-1].value is None
-    ):
-        return False
-    new.args.args.pop()
-    new.args.defaults.pop()
-
-    def expr(source):
-        return ast.dump(ast.parse(source, mode="eval").body)
-
-    permitted = {
-        ("_resolve_condition_images_for_packing", "mixed_sft_tasks"): expr(
-            "sft_condition_masks is not None"
-        ),
-        ("_forward_rebuild", arg): expr(arg),
-        ("_build_context", "sft_mask"): expr(
-            "sft_condition_masks[batch_index] if sft_condition_masks else frozenset()"
-        ),
-    }
-    guard = expr("sft_condition_masks is not None and len(sft_condition_masks) != batch_size")
-
-    class OriginalForward(ast.NodeTransformer):
-        def visit_If(self, node):
-            if (
-                ast.dump(node.test) == guard
-                and not node.orelse
-                and len(node.body) == 1
-                and isinstance(node.body[0], ast.Raise)
-                and node.body[0].cause is None
-                and isinstance(node.body[0].exc, ast.Call)
-                and ast.unparse(node.body[0].exc.func) == "ValueError"
-                and all(isinstance(x, ast.Constant) for x in node.body[0].exc.args)
-                and not node.body[0].exc.keywords
-            ):
-                return None
-            return self.generic_visit(node)
-
-        def visit_Call(self, node):
-            self.generic_visit(node)
-            func = node.func
-            if (
-                isinstance(func, ast.Attribute)
-                and isinstance(func.value, ast.Name)
-                and func.value.id == "self"
-            ):
-                node.keywords = [
-                    kw
-                    for kw in node.keywords
-                    if permitted.get((func.attr, kw.arg)) != ast.dump(kw.value)
-                ]
-            return node
-
-    return ast.dump(old) == ast.dump(OriginalForward().visit(new))
-
-
 def appended_tests(before: ast.Module, after: ast.Module) -> str | None:
     """Identify the complete set of new, trailing tests/helpers without excusing edits in existing nodes."""
     length = len(before.body)
@@ -363,6 +283,22 @@ def appended_tests(before: ast.Module, after: ast.Module) -> str | None:
     if len(names) != len(appended) or names & existing:
         return None
     return "<appended-tests:" + ",".join(sorted(names)) + ">"
+
+
+def reviewed_change_symbols(
+    symbols: list[str], before: str | None, after: str | None, rule: dict | None
+) -> list[str]:
+    """Partition a reviewed source transition only when both entire blobs match."""
+    if not rule or before is None or after is None:
+        return symbols
+    expected = set(rule["symbols"])
+    if (
+        expected <= set(symbols)
+        and hashlib.sha256(before.encode()).hexdigest() == rule["before_sha256"]
+        and hashlib.sha256(after.encode()).hexdigest() == rule["after_sha256"]
+    ):
+        return sorted((set(symbols) - expected) | {rule["marker"]})
+    return symbols
 
 
 def semantic_changes(
@@ -392,15 +328,6 @@ def semantic_changes(
             marker = appended_tests(before_tree, after_tree)
             if marker is not None and marker in (eligible_symbols or ()):
                 return [marker]
-        for name in tuple(changes):
-            if (
-                before_tree
-                and after_tree
-                and name + ":sft-mask-argument" in (eligible_symbols or ())
-                and sft_forward_extension(before_tree, after_tree, name)
-            ):
-                changes.remove(name)
-                changes.add(name + ":sft-mask-argument")
         return sorted(changes)
     except (SyntaxError, ValueError, RecursionError, ImportError):
         return ["<unparsed>"]

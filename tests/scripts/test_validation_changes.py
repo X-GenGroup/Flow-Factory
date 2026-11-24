@@ -513,30 +513,6 @@ def test_sft_declaration_does_not_narrow_an_unrelated_forward_or_module_change()
         )
 
 
-def test_mask_forwarding_must_leave_the_entire_previous_forward_intact(bindings):
-    path = "src/flow_factory/models/bagel/bagel.py"
-    marker = "BagelAdapter.forward:sft-mask-argument"
-    original = (
-        "class BagelAdapter:\n    def forward(self, x):\n        return self._forward_rebuild(x)\n"
-    )
-    changed = original.replace("self, x", "self, x, sft_condition_masks=None").replace(
-        "_forward_rebuild(x)", "_forward_rebuild(x, sft_condition_masks=sft_condition_masks)"
-    )
-
-    def symbols(text):
-        return changes.semantic_changes(path, original, text, bindings, eligible_symbols={marker})
-
-    assert symbols(changed) == [marker]
-    for mutation in (
-        changed.replace("_forward_rebuild(x,", "_forward_rebuild(x + 1,"),
-        changed.replace("_forward_rebuild(", "_other("),
-        changed.replace("=sft_condition_masks)", "=preprocess(sft_condition_masks))"),
-        changed.replace("=None", "=True"),
-        changed.replace("return", "save_checkpoint()\n        return"),
-    ):
-        assert symbols(mutation) == ["BagelAdapter.forward"]
-
-
 def test_reviewed_appended_tests_do_not_hide_shared_helpers_or_existing_edits(bindings):
     path = "tests/test_drop.py"
     marker = "<appended-tests:_helper,test_dropout>"
@@ -554,3 +530,33 @@ def test_reviewed_appended_tests_do_not_hide_shared_helpers_or_existing_edits(bi
         original + appended + "\nregister()\n",
     ):
         assert marker not in symbols(mutation)
+
+
+def test_reviewed_before_after_blobs_only_partition_selected_symbols():
+    import hashlib
+
+    old = "def forward(self, x): return prepare(x)\n"
+    new = "def forward(self, x, mask=None): return prepare(x, mask=mask)\n"
+    symbols = ["Adapter.forward", "Adapter.other_update"]
+    rule = {
+        "before_sha256": hashlib.sha256(old.encode()).hexdigest(),
+        "after_sha256": hashlib.sha256(new.encode()).hexdigest(),
+        "symbols": ["Adapter.forward"],
+        "marker": "Adapter.forward:optional-mask",
+    }
+    assert changes.reviewed_change_symbols(symbols, old, new, rule) == [
+        "Adapter.forward:optional-mask",
+        "Adapter.other_update",
+    ]
+    for before, after in (
+        (old.replace("prepare", "other"), new),
+        (old, new.replace("prepare", "other")),
+        (old, new + "register()\n"),
+        (None, new),
+        (old, None),
+    ):
+        assert changes.reviewed_change_symbols(symbols, before, after, rule) == symbols
+    assert changes.reviewed_change_symbols(["Adapter.other_update"], old, new, rule) == [
+        "Adapter.other_update"
+    ]
+    assert changes.reviewed_change_symbols(symbols, old, new, None) == symbols
