@@ -25,14 +25,14 @@ The component execution policy in [P20a](milestones/v0.5x-v0.6.md#p20a) is merge
 reference for component sharding and [P21 DRaFT-K](milestones/v0.5x-v0.6.md#p21).
 P15a and P18 ART are merged. [P18 experiment/publication follow-through](milestones/v0.5x-v0.6.md#p18)
 can proceed independently.
-[P15b EP model admission](milestones/v0.6-v0.7.md#p15b) follows DRTune in the planned implementation order.
+[P23 SFT conditioning dropout](milestones/v0.6x-sft.md#p23) is the next feature after v0.6.0.
+[P15b EP model admission](milestones/v0.6-v0.7.md#p15b) follows P23.
 P01–P14 are complete and v0.5.0 is published. Start from latest main; historical P11/P12 handoffs
 retain evidence, not an instruction to rerun or reopen their completed stacks. A concrete new
 model layout still needs its own admission and evidence.
 
 A contribution need not implement an entire milestone or require a large GPU cluster. Preserve
-P00–P22 and existing child IDs. P19–P22 split the next algorithm/component work into coherent
-PRs; P15/P16 retain the deferred EP work; the milestone pages own their status and dependency links.
+P00–P23 and existing child IDs. The milestone pages own the work items' status and dependency links.
 
 ## Status and ownership
 

@@ -1,8 +1,7 @@
 # Flow-Factory roadmap
 
-The v0.6 training stack is merged on main at `d09f38b7`. It builds on ART/shared replay #377,
-reference MSE #379, async media logging #380, differentiable reward #381, ReFL #382 and
-component policy #385.
+Main was checked at `e0eb1382`. Since v0.6.0, [#395](https://github.com/X-GenGroup/Flow-Factory/pull/395)
+corrected the continuous training time shift and recorded its convention for checkpoint continuation.
 P01–P14 are merged and [v0.5.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.5.0).
 The historical v0.5.0 19-model / 14-trainer TP/SP/Ulysses-CP inventory, SP completion, shared parallelism owners,
 P12j sharded loading and P13a evidence continuity remain the implemented foundation. Historical
@@ -16,9 +15,11 @@ and evidence are recorded in the [ART guide](../guidance/training/art.md).
 [P20](milestones/v0.5x-v0.6.md#p20) adds auxiliary execution policies and sharding in #385–#387.
 [DRaFT-K](milestones/v0.5x-v0.6.md#p21) merged in #389 and #390.
 [DRTune](milestones/v0.5x-v0.6.md#p22) merged in #391–#393, bringing the registry to 18 trainers.
-See the [v0.6.0 release notes](../docs/release/v0.6-notes.md) for compatibility and artifacts.
-P15b–P15f target NCCL EP in v0.7 after v0.6. P16 targets optional DeepEP in v0.8. P17 remains the
-v1.0 stabilization boundary. See the [derivative/placement design](design/differentiable-rewards.md).
+[v0.6.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.6.0).
+The [release notes](../docs/release/v0.6-notes.md) record compatibility and artifacts.
+[P23 SFT conditioning dropout](milestones/v0.6x-sft.md#p23) is the next feature for v0.6.x.
+P15b–P15f follow it for NCCL EP in v0.7. P16 targets optional DeepEP in v0.8. P17 remains the
+v1.0 stabilization boundary.
 
 Use independent worktrees and native Stack PRs when work is dependent; the user reviews and merges.
 Reuse valid GPU receipts at their original sources. Changed contracts select targeted local jobs
@@ -40,13 +41,14 @@ listed implementation and acceptance evidence.
 | Find a release or work item | The release table below and its linked milestone |
 | Claim work, hand it off, or update its status | [Contributing to the roadmap](CONTRIBUTING.md) |
 | Understand ownership and upstream reuse | [Architecture direction](design/architecture.md) |
+| Plan numeric or native SFT conditioning dropout for a model and task | [SFT conditioning dropout](milestones/v0.6x-sft.md#p23) |
 | Plan differentiable algorithms and auxiliary component placement | [Differentiable feedback design](design/differentiable-rewards.md) |
 | Plan EP model admission, ownership and upstream reuse | [EP design checkpoint](design/expert-parallelism.md) |
 | Plan pre-commit hooks, CI and consistency checks | [Developer automation](design/automation.md) |
 | Understand the proposed risk and GPU evidence model | [Validation design](design/validation.md) |
 | Implement an extension using today's API | [Development guide](../AGENTS.md) and [model guide](../docs/development/new-model.md) |
 
-P00-P22 are stable planning IDs, not GitHub PR numbers. P01 has three implementation children,
+P00-P23 are stable planning IDs, not GitHub PR numbers. P01 has three implementation children,
 P01a-P01c, keeping the existing top-level IDs stable. Each item lives in exactly one milestone
 file; its status, dependencies, and coordination link are maintained there. A work item normally
 maps to one coherent PR, with justified splits recorded before implementation. This roadmap
@@ -75,9 +77,10 @@ was never published as tags and is superseded by this sequence; preserve the act
 | `v0.5.1` | Torch 2.10/2.11 compatibility after #374 | Published source-only patch tag; no Release or image |
 | [v0.5.x](milestones/v0.5x-v0.6.md#p18) | P18 | DiffusionART with bounded sampler/trajectory semantics |
 | [v0.6.0](milestones/v0.5x-v0.6.md#v06-release-gate) | P19–P22 | ReFL, DRaFT-K and DRTune with differentiable rewards and component distribution |
+| [v0.6.x](milestones/v0.6x-sft.md#p23) | P23 | Model- and task-specific SFT conditioning dropout with cached and on-demand input encoding |
 | [v0.7.0](milestones/v0.6-v0.7.md#p15) | P15 | One real MoE model with a correct NCCL EP implementation |
 | [v0.8.0](milestones/v0.6-v0.7.md#p16) | P16 | Optional DeepEP transport with a validated NCCL fallback |
-| [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 and P18-P22 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
+| [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 and P18-P23 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
 
 P01a supplied hooks/basic CPU CI, P01b the manual evidence policy, P01c consistency checks and
 P04 automatic selection. P03 qualified initial TP/SP; the v0.4 ownership work then supported
@@ -125,9 +128,10 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
+| SFT conditioning dropout | [P23](milestones/v0.6x-sft.md#p23) delivers both input paths and model policies together | Qualify the registry and adopt the [per-task model admission checklist](milestones/v0.6x-sft.md#new-model-admission) |
 | ART experiment follow-through | [P18](milestones/v0.5x-v0.6.md#p18): record final experiment outcomes | Independent of component execution |
 | Optional differentiable training memory work | [P21b](milestones/v0.5x-v0.6.md#p21b): evaluate staged VJPs against the end-to-end reference | DRaFT-K baseline |
-| Deferred EP model admission | [P15b](milestones/v0.6-v0.7.md#p15b): pin DiT-MoE semantics and upstream reference | Resolve conditioning, auxiliary objective and expert ownership before EP runtime |
+| Deferred EP model admission | [P15b](milestones/v0.6-v0.7.md#p15b): pin DiT-MoE semantics and upstream reference | Start after P23. Resolve conditioning, auxiliary objective and expert ownership before EP runtime |
 | NCCL EP integration | [P15c–P15f](milestones/v0.6-v0.7.md#p15c) | EP=1 reference, dispatch, FSDP/state, then online/offline integration |
 | Optional DeepEP | [P16a](milestones/v0.6-v0.7.md#p16a): qualify a hardware/toolchain/API tuple | NCCL reference stays supported; no mid-collective fallback |
 

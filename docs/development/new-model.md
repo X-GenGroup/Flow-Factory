@@ -1016,6 +1016,7 @@ Before submitting a new model adapter, verify:
 - [ ] **`forward()`** — Single denoising step; ends with `self.scheduler.step()`; returns `SDESchedulerOutput`
 - [ ] **Pipeline I/O contract** — Declares exact input/output media, rate, geometry, and batch semantics before enabling offline training
 - [ ] **Effective checkpoint contract (when needed)** — `_resolve_pipeline_io_contract()` narrows a class-level superset without changing public dataset or algorithm code
+- [ ] **SFT conditioning dropout (planned P23)** — Record each checkpoint/task's eligible conditions, protected targets, recipe evidence and cached/on-demand realization. Identify tasks outside SFT scope. Follow the [P23 model admission checklist](../../roadmap/milestones/v0.6x-sft.md#new-model-admission).
 - [ ] **Condition-state preparer (when needed)** — Declaration-only logical component requirements; one input realization reused by every candidate/forward in the batch
 - [ ] **Output-state codec (when supported)** — Declaration-only logical component requirements; on-the-fly detached target encoding; exact geometry validation
 - [ ] **Objective reduction (when specialized)** — Override only the offline flow-matching hook; online trajectory reduction remains unchanged
