@@ -207,13 +207,87 @@ def definitions(tree: ast.Module | None) -> dict[str, str]:
     return found
 
 
+def added_import_symbols(old: ast.Module, new: ast.Module, eligible: set[str]) -> set[str]:
+    """Separate reviewed bindings only if all other module-level code is unchanged."""
+    if not eligible:
+        return set()
+
+    def binding(node, alias):
+        origin = node.module + "." if isinstance(node, ast.ImportFrom) else ""
+        return f"<import:{origin}{alias.name}>"
+
+    def is_import(node):
+        return isinstance(node, (ast.ImportFrom, ast.Import))
+
+    # A newly bound name may affect an existing method or overwrite an optional import.
+    previous = {node.id for node in ast.walk(old) if isinstance(node, ast.Name)}
+    previous.update(
+        alias.asname or alias.name.split(".")[0]
+        for node in ast.walk(old)
+        if is_import(node)
+        for alias in node.names
+    )
+
+    def optional_import_block(node):
+        return isinstance(node, ast.Try) and all(
+            is_import(item)
+            or (
+                isinstance(item, ast.AnnAssign)
+                and isinstance(item.value, ast.Constant)
+                and item.value.value is None
+            )
+            for item in node.body
+        )
+
+    pruned = copy.deepcopy(new)
+    body, added = [], set()
+    leading = True
+    for index, node in enumerate(pruned.body):
+        if index == 0 and ast.get_docstring(pruned, clean=False) is not None:
+            body.append(node)
+            continue
+        if leading and is_import(node):
+            kept = []
+            for alias in node.names:
+                symbol = binding(node, alias)
+                name = alias.name.split(".")[0]
+                if alias.asname is None and name not in previous and symbol in eligible:
+                    if symbol in added:
+                        return set()
+                    added.add(symbol)
+                else:
+                    kept.append(alias)
+            if not kept:
+                continue
+            node.names = kept
+        elif not optional_import_block(node):
+            leading = False
+        body.append(node)
+    pruned.body = body
+    if added and definitions(pruned).get("<module>") == definitions(old).get("<module>"):
+        return added
+    return set()
+
+
 def semantic_changes(
-    path: str, before: str | None, after: str | None, bindings: ImportBindings
+    path: str,
+    before: str | None,
+    after: str | None,
+    bindings: ImportBindings,
+    *,
+    eligible_imports: set[str] | None = None,
 ) -> list[str]:
     try:
-        old = definitions(bindings.normalize(path, before) if before is not None else None)
-        new = definitions(bindings.normalize(path, after) if after is not None else None)
-        return sorted(k for k in old.keys() | new.keys() if old.get(k) != new.get(k))
+        before_tree = bindings.normalize(path, before) if before is not None else None
+        after_tree = bindings.normalize(path, after) if after is not None else None
+        old, new = definitions(before_tree), definitions(after_tree)
+        changes = {k for k in old.keys() | new.keys() if old.get(k) != new.get(k)}
+        if "<module>" in changes and eligible_imports and before_tree and after_tree:
+            imports = added_import_symbols(before_tree, after_tree, eligible_imports)
+            if imports:
+                changes.remove("<module>")
+                changes.update(imports)
+        return sorted(changes)
     except (SyntaxError, ValueError, RecursionError, ImportError):
         return ["<unparsed>"]
 

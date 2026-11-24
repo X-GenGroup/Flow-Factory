@@ -9,6 +9,10 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths:
+    - src/flow_factory/models/sft_dropout.py
+    requires: ['sft.dropout.images']
+    reason: Record-addressed numeric selection and native admission are exercised through the model policy.
   - paths: [src/flow_factory/utils/noise_schedule.py, tests/test_noise_schedule.py,
             src/flow_factory/hparams/training_args/_offline.py, src/flow_factory/hparams/training_args/awm.py,
             src/flow_factory/hparams/training_args/crd.py, src/flow_factory/hparams/training_args/dgpo.py,
@@ -1477,6 +1481,20 @@ interactions:
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
 focused_owners:
+  - paths:
+    - src/flow_factory/models/flux/flux1.py
+    - src/flow_factory/models/flux/flux1_kontext.py
+    - src/flow_factory/models/flux/flux2.py
+    - src/flow_factory/models/flux/flux2_klein.py
+    - src/flow_factory/models/flux/flux3.py
+    - src/flow_factory/models/qwen_image/qwen_image.py
+    - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+    - src/flow_factory/models/qwen_image_21/qwen_image_21.py
+    - src/flow_factory/models/stable_diffusion/sd3_5.py
+    - src/flow_factory/models/z_image/z_image.py
+    symbols: ['*.sft_condition_dropout_policy', '<import:flow_factory.models.sft_dropout.CAPTION_DROPOUT>']
+    requires: ['sft.dropout.images']
+    reason: Caption policy declarations must preserve native CFG branches, pooled features and ordered references.
   - paths: [src/flow_factory/models/stable_diffusion/sd3_5.py]
     symbols: [SD3_5Adapter.inference]
     requires: [model.sd35.cp_contracts, model.sd35.lifecycle, algorithm.draft.contracts]
