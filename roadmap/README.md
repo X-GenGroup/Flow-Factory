@@ -41,7 +41,7 @@ listed implementation and acceptance evidence.
 | Find a release or work item | The release table below and its linked milestone |
 | Claim work, hand it off, or update its status | [Contributing to the roadmap](CONTRIBUTING.md) |
 | Understand ownership and upstream reuse | [Architecture direction](design/architecture.md) |
-| Plan how SFT drops text or reference images | [SFT conditioning dropout](milestones/v0.6x-sft.md#p23) |
+| Plan SFT caption dropout with cached or on-demand encoding | [SFT conditioning dropout](milestones/v0.6x-sft.md#p23) |
 | Plan differentiable algorithms and auxiliary component placement | [Differentiable feedback design](design/differentiable-rewards.md) |
 | Plan EP model admission, ownership and upstream reuse | [EP design checkpoint](design/expert-parallelism.md) |
 | Plan pre-commit hooks, CI and consistency checks | [Developer automation](design/automation.md) |
@@ -77,7 +77,7 @@ was never published as tags and is superseded by this sequence; preserve the act
 | `v0.5.1` | Torch 2.10/2.11 compatibility after #374 | Published source-only patch tag; no Release or image |
 | [v0.5.x](milestones/v0.5x-v0.6.md#p18) | P18 | DiffusionART with bounded sampler/trajectory semantics |
 | [v0.6.0](milestones/v0.5x-v0.6.md#v06-release-gate) | P19–P22 | ReFL, DRaFT-K and DRTune with differentiable rewards and component distribution |
-| [v0.6.x](milestones/v0.6x-sft.md#p23) | P23 | Selectable SFT conditioning dropout for qualified T2I and I2I adapters |
+| [v0.6.x](milestones/v0.6x-sft.md#p23) | P23 | SFT caption dropout across registered models, with cached and on-demand condition encoding |
 | [v0.7.0](milestones/v0.6-v0.7.md#p15) | P15 | One real MoE model with a correct NCCL EP implementation |
 | [v0.8.0](milestones/v0.6-v0.7.md#p16) | P16 | Optional DeepEP transport with a validated NCCL fallback |
 | [v1.0.0-rc.1](milestones/v1.0.md#p17), then [v1.0.0](milestones/v1.0.md#release-records) | P17, after P00-P16 and P18-P23 | Qualified complete scope, documented compatibility guarantees, maintainable ownership and final integration evidence |
@@ -128,7 +128,7 @@ not assignments or a second status board.
 
 | Entry point | First action | Dependency boundary |
 |---|---|---|
-| SFT conditioning dropout | [P23a](milestones/v0.6x-sft.md#p23a): add the SFT policy and qualify SD3.5 text | Offline training baseline, then [P23b](milestones/v0.6x-sft.md#p23b) for FLUX.2 |
+| SFT conditioning dropout | [P23a](milestones/v0.6x-sft.md#p23a) qualifies SD3.5 | [P23b](milestones/v0.6x-sft.md#p23b) covers editing, [P23c](milestones/v0.6x-sft.md#p23c) adds on-demand input encoding, and [P23d](milestones/v0.6x-sft.md#p23d) qualifies the registry |
 | ART experiment follow-through | [P18](milestones/v0.5x-v0.6.md#p18): record final experiment outcomes | Independent of component execution |
 | Optional differentiable training memory work | [P21b](milestones/v0.5x-v0.6.md#p21b): evaluate staged VJPs against the end-to-end reference | DRaFT-K baseline |
 | Deferred EP model admission | [P15b](milestones/v0.6-v0.7.md#p15b): pin DiT-MoE semantics and upstream reference | Start after P23. Resolve conditioning, auxiliary objective and expert ownership before EP runtime |
