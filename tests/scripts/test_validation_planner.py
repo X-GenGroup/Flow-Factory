@@ -1447,6 +1447,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "klein-offline-dpo-raw-cache-fsdp2",
                 "klein-sft-dropout-raw-cache-fsdp2",
                 "refl-sd35-ddp",
                 "refl-flux-tp-cp",
@@ -2363,7 +2364,12 @@ def test_fetch_prefers_exact_and_stops_at_changed_execution_inputs(plan, monkeyp
         ),
         (
             "tests/distributed/offline_dpo_observations.py",
-            {"flux-offline-dpo-cp", "wan-offline-dpo-cp", "flux-online-dpo-overlap-native"},
+            {
+                "flux-offline-dpo-cp",
+                "wan-offline-dpo-cp",
+                "flux-online-dpo-overlap-native",
+                "klein-offline-dpo-raw-cache-fsdp2",
+            },
         ),
     ],
 )

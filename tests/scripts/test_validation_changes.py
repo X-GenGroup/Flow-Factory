@@ -560,3 +560,63 @@ def test_reviewed_before_after_blobs_only_partition_selected_symbols():
         "Adapter.other_update"
     ]
     assert changes.reviewed_change_symbols(symbols, old, new, None) == symbols
+
+
+def test_reviewed_owner_edits_partition_only_matching_function_bodies():
+    name = "Trainer.optimize_batch"
+    before = (
+        "class Trainer:\n    def optimize_batch(self, batch):\n        return loss(move(batch))\n"
+    )
+    after = before.replace("move(batch)", "resolve(batch, self)")
+    rule = {
+        "symbols": [name],
+        "owner_edit_sha256": changes.owner_edit_digest(before, after, {name}),
+        "marker": "<input-acquisition>",
+    }
+    # Another method remains visible and does not invalidate the reviewed function.
+    other = "\n    def save(self): return {}\n"
+    assert changes.reviewed_change_symbols([name, "Trainer.save"], before, after + other, rule) == [
+        "<input-acquisition>",
+        "Trainer.save",
+    ]
+    for unreviewed_before, unreviewed_after in [
+        (before, after.replace("loss(", "wrong_loss(")),
+        (before.replace("move(batch)", "sample(batch)"), after),
+        (before, after.replace("def optimize_batch", "@no_grad\n    def optimize_batch")),
+    ]:
+        assert changes.reviewed_change_symbols(
+            [name], unreviewed_before, unreviewed_after, rule
+        ) == [name]
+
+    unknown = {**rule, "symbols": ["<absent>"], "owner_edit_sha256": None}
+    assert changes.owner_edit_digest(before, after, {"<absent>"}) is None
+    assert changes.reviewed_change_symbols(["<absent>"], before, after, unknown) == ["<absent>"]
+
+
+def test_offline_input_route_cannot_replace_unreviewed_dpo_math_or_sampler_changes():
+    import yaml
+
+    policy = yaml.safe_load((planner.ROOT / planner.POLICY).read_text())
+    for path, symbol, usual in [
+        (
+            "src/flow_factory/trainers/offline/offline_dpo.py",
+            "OfflineDPOTrainer.optimize_batch",
+            "algorithm.offline_dpo.flux_cp",
+        ),
+        (
+            "src/flow_factory/data_utils/sampler.py",
+            "OfflineConditionSampler.set_epoch",
+            "sft.dropout.wan_continuation",
+        ),
+    ]:
+        scope = {
+            "paths": [path],
+            "scope_complete": True,
+            "facets": [],
+            "semantic_symbols": {path: ["<offline-input-acquisition>"]},
+        }
+        obligations = planner.infer_requirements(scope, policy, {})["obligations"]
+        assert "algorithm.offline_dpo.raw_cache" in obligations
+        assert usual not in obligations
+        scope["semantic_symbols"][path] = [symbol]
+        assert usual in planner.infer_requirements(scope, policy, {})["obligations"]

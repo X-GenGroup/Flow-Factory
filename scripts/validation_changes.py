@@ -161,14 +161,14 @@ class ImportBindings:
         return Normalize().visit(ast.parse(source))
 
 
-def definitions(tree: ast.Module | None) -> dict[str, str]:
+def definitions(tree: ast.Module | None, *, render=ast.dump) -> dict[str, str]:
     """Partition classes into headers, fields and methods; preserve whole functions."""
     found: dict[str, str] = {}
     if tree is None:
         return found
 
     def add(name, node):
-        found[name] = found.get(name, "") + ast.dump(node, include_attributes=False)
+        found[name] = found.get(name, "") + render(node)
 
     def visit(body, prefix=""):
         remaining = []
@@ -285,18 +285,50 @@ def appended_tests(before: ast.Module, after: ast.Module) -> str | None:
     return "<appended-tests:" + ",".join(sorted(names)) + ">"
 
 
+def owner_edit_digest(before: str, after: str, symbols: set[str]) -> str | None:
+    """Bind both versions of selected syntax owners independently of unrelated file contents."""
+
+    def shape(value):
+        if isinstance(value, ast.AST):
+            # Python 3.12 adds empty type_params to functions and classes.
+            return type(value).__name__, [
+                (name, shape(field))
+                for name, field in ast.iter_fields(value)
+                if field is not None and field != []
+            ]
+        if isinstance(value, list):
+            return [shape(item) for item in value]
+        return value
+
+    snapshots = []
+    known = set()
+    for source in (before, after):
+        entries = definitions(ast.parse(source), render=lambda node: repr(shape(node)))
+        known.update(entries)
+        snapshots.append([(name, entries.get(name)) for name in sorted(symbols)])
+    if not symbols or not symbols <= known:
+        return None
+    return hashlib.sha256(repr(snapshots).encode()).hexdigest()
+
+
 def reviewed_change_symbols(
     symbols: list[str], before: str | None, after: str | None, rule: dict | None
 ) -> list[str]:
-    """Partition a reviewed source transition only when both entire blobs match."""
+    """Partition reviewed owners while leaving every other changed symbol visible."""
     if not rule or before is None or after is None:
         return symbols
     expected = set(rule["symbols"])
-    if (
-        expected <= set(symbols)
-        and hashlib.sha256(before.encode()).hexdigest() == rule["before_sha256"]
-        and hashlib.sha256(after.encode()).hexdigest() == rule["after_sha256"]
-    ):
+    if not expected or not expected <= set(symbols):
+        return symbols
+    if "owner_edit_sha256" in rule:
+        digest = owner_edit_digest(before, after, expected)
+        matches = digest is not None and digest == rule["owner_edit_sha256"]
+    else:
+        matches = (
+            hashlib.sha256(before.encode()).hexdigest() == rule["before_sha256"]
+            and hashlib.sha256(after.encode()).hexdigest() == rule["after_sha256"]
+        )
+    if matches:
         return sorted((set(symbols) - expected) | {rule["marker"]})
     return symbols
 

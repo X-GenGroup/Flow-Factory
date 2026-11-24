@@ -143,7 +143,7 @@ def test_packed_sft_raw_and_cached_match(family, tmp_path, monkeypatch):
             patch.object(trainer.adapter, prefill_method, wraps=prefill) as native_prefix,
         ):
             batch = next(iter(trainer.dataloader))
-            assert ("_sft_raw" in batch.condition) == (not cached)
+            assert ("_offline_raw" in batch.condition) == (not cached)
             assert batch.output.target_media[0][0].payload.getpixel((0, 0)) == (0, 128, 0)
             trainer.optimize_batch(batch)
         (call,) = native_prefix.call_args_list

@@ -22,8 +22,8 @@ from flow_factory.data_utils.dataset import (
     _apply_torch_format,
     format_preprocessed_columns,
 )
+from flow_factory.data_utils.offline_conditions import encode_raw_offline_conditions
 from flow_factory.data_utils.offline_dataset import _collate_condition_mappings
-from flow_factory.data_utils.sft_conditions import encode_raw_sft_conditions
 
 
 class _Encoder:
@@ -73,7 +73,7 @@ def test_raw_sft_matches_cache_dtypes_and_ragged_fields_without_serializing_imag
         raise AssertionError("raw encoding serialized an image through Arrow")
 
     monkeypatch.setattr(Image.Image, "save", unexpected_image_save)
-    actual = encode_raw_sft_conditions(rows, encoder.preprocess, {})
+    actual = encode_raw_offline_conditions(rows, encoder.preprocess, {})
     for field in ("images", "condition_images"):
         for raw_refs, cached_refs in zip(actual.pop(field), expected.pop(field), strict=True):
             assert [ref.tobytes() for ref in raw_refs] == [ref.tobytes() for ref in cached_refs]

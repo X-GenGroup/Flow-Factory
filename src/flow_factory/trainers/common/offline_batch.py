@@ -21,7 +21,19 @@ from typing import Any, Dict, Union
 import torch
 
 from ...contracts import NON_MODEL_CONDITION_KEYS
+from ...data_utils.offline_conditions import encode_raw_offline_conditions
+from ...data_utils.offline_train_data import offline_preprocess_kwargs
 from ...models.condition_state import PreparedConditionState
+
+
+def resolve_offline_condition(condition: Mapping[str, Any], trainer: Any) -> Dict[str, Any]:
+    """Encode raw input once per record and move the resulting batch to the policy device."""
+    if "_offline_raw" in condition:
+        preprocess = trainer.adapter.preprocess_func
+        kwargs = offline_preprocess_kwargs(trainer.config, preprocess, None)
+        with torch.no_grad():
+            condition = encode_raw_offline_conditions(condition["_offline_raw"], preprocess, kwargs)
+    return move_condition_to_device(condition, trainer.accelerator.device)
 
 
 def move_condition_to_device(

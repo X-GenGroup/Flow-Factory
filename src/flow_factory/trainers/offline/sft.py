@@ -24,11 +24,7 @@ from torch.utils.data import DataLoader
 
 from ...contracts import OFFLINE_EXECUTION_CONTRACT
 from ...data_utils.offline_dataset import DemonstrationOutputBatch, OfflineBatch
-from ...data_utils.offline_train_data import (
-    build_offline_train_dataloader,
-    offline_preprocess_kwargs,
-)
-from ...data_utils.sft_conditions import encode_raw_sft_conditions
+from ...data_utils.offline_train_data import build_offline_train_dataloader
 from ...models.sft_dropout import resolve_sft_dropout
 from ...utils.dist import data_parallel_geometry
 from ..abc import BaseTrainer
@@ -47,7 +43,7 @@ from ..common.group_noise import (
     independent_batch_generator,
     record_noise_ids,
 )
-from ..common.offline_batch import bind_prepared_condition_output, move_condition_to_device
+from ..common.offline_batch import bind_prepared_condition_output, resolve_offline_condition
 from ..forward_process import forward_velocity_state
 
 
@@ -66,10 +62,6 @@ class SFTTrainer(BaseTrainer):
         self.sft_policy = resolve_sft_dropout(
             type(self.adapter), self.config.model_args.model_name_or_path, mode
         )
-        if not self.config.data_args.enable_preprocess:
-            self.raw_condition_kwargs = offline_preprocess_kwargs(
-                self.config, self.adapter.preprocess_func, None
-            )
         dataloader = build_offline_train_dataloader(
             config=self.config,
             accelerator=self.accelerator,
@@ -93,14 +85,7 @@ class SFTTrainer(BaseTrainer):
         output = self._require_demonstration_batch(batch)
         condition = dict(batch.condition)
         masks = condition.pop("_sft_mask", None)
-        if "_sft_raw" in condition:
-            with torch.no_grad():
-                condition = encode_raw_sft_conditions(
-                    condition.pop("_sft_raw"),
-                    self.adapter.preprocess_func,
-                    self.raw_condition_kwargs,
-                )
-        condition = move_condition_to_device(condition, self.accelerator.device)
+        condition = resolve_offline_condition(condition, self)
         if masks is not None and not self.sft_policy.cached_empty_caption:
             condition["sft_condition_masks"] = masks
 

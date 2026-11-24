@@ -9,6 +9,9 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/data_utils/offline_conditions.py]
+    requires: [sft.dropout.core_contracts, algorithm.offline_dpo.contracts, algorithm.offline_dpo.raw_cache, sft.dropout.klein_fsdp2]
+    reason: The shared raw encoder feeds both demonstration and preference loaders; new unclassified owners retain both training witnesses.
   - paths:
     - src/flow_factory/models/sft_dropout.py
     requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
@@ -1492,9 +1495,38 @@ interactions:
     requires: [checkpoint.roundtrip]
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
-# Exact before/after file blobs bind exceptional behavioral partitions to their reviewed code.
-# A later edit restores ordinary owner routing for the entire changed implementation.
+# Exceptional transitions bind either whole file blobs or the before/after syntax of named owners.
+# Unmatched edits keep their ordinary owner routes.
 reviewed_transitions:
+  # Shared loader and objective extractions retain their ordinary gates for every other edit.
+  src/flow_factory/data_utils/offline_dataset.py:
+    symbols: ['OfflineDataset.__getitem__', 'OfflineDataset.__init__']
+    marker: "<offline-input-acquisition>"
+    owner_edit_sha256: 69e61157d2a8afc053865a65d9804c0641b468e1cf47ceaf2f0379fa379d15fc
+  src/flow_factory/data_utils/offline_loader.py:
+    symbols: ['<module>', 'build_offline_dataloader']
+    marker: "<offline-input-acquisition>"
+    owner_edit_sha256: 8d1e22f014a5f364b933082e6a3e3b44c3a5bbe9a814cebc852edce5d53c4785
+  src/flow_factory/data_utils/offline_train_data.py:
+    symbols: ['<module>', 'build_offline_train_dataloader']
+    marker: "<offline-input-acquisition>"
+    owner_edit_sha256: 906270e60beb70d6f7db05dfd97f45ac69b19b316c91207c3d3539249ecb5ac7
+  src/flow_factory/data_utils/sampler.py:
+    symbols: ['OfflineConditionSampler.set_epoch']
+    marker: "<offline-input-acquisition>"
+    owner_edit_sha256: 096bdd7351b02613053153d124bc2c2a201f4e60c1a8dc8f24bde50abaeef988
+  src/flow_factory/data_utils/sft_conditions.py:
+    symbols: ['<definition_order>', '<module>', 'SFTConditionSource', 'SFTConditionSource.dataset_dir', 'SFTConditionSource.ordered', 'SFTConditionSource.policy', 'SFTConditionSource.select', '_cache_tensor', '_cache_value', '_cached_row_types', 'encode_raw_sft_conditions']
+    marker: "<offline-input-acquisition>"
+    owner_edit_sha256: 37af0b0d9fc9e24de674c3683f3548761b305b08059a6b9e8d1b19ea220e1c03
+  src/flow_factory/trainers/offline/offline_dpo.py:
+    symbols: ['<module>', 'OfflineDPOTrainer.optimize_batch']
+    marker: "<offline-input-acquisition>"
+    owner_edit_sha256: 0e78f2bb92f8983781282df4578d1417d71458c48f11d2b1e0e8503635c049d2
+  src/flow_factory/trainers/offline/sft.py:
+    symbols: ['<module>', 'SFTTrainer._build_train_dataloader', 'SFTTrainer.optimize_batch']
+    marker: "<offline-input-acquisition>"
+    owner_edit_sha256: 2719e71d621b1b24dc58966e2033ceb688b58ddc99a7c86b333cceffae12f6d4
   src/flow_factory/models/bagel/bagel.py:
     symbols: ['BagelAdapter.forward']
     marker: 'BagelAdapter.forward:sft-mask-argument'
@@ -1553,6 +1585,32 @@ reviewed_transitions:
     after_sha256: 41b40f8e339f296e1d6eafa2ed7413ce80742cb5b36b9536b3d40e0ee2274318
 
 focused_owners:
+  - paths:
+    - src/flow_factory/data_utils/offline_dataset.py
+    - src/flow_factory/data_utils/offline_loader.py
+    - src/flow_factory/data_utils/offline_train_data.py
+    - src/flow_factory/data_utils/sampler.py
+    - src/flow_factory/data_utils/sft_conditions.py
+    - src/flow_factory/trainers/offline/offline_dpo.py
+    - src/flow_factory/trainers/offline/sft.py
+    symbols: ["<offline-input-acquisition>"]
+    requires: [sft.dropout.core_contracts, algorithm.offline_dpo.contracts, algorithm.offline_dpo.raw_cache]
+    reason: Qualify the reviewed input-boundary extraction with SFT selection and sampler regressions and a native preference update.
+  - paths: [src/flow_factory/data_utils/offline_conditions.py]
+    symbols: ['<module>', '<definition_order>', RawOfflineConditionSource, RawOfflineConditionSource.dataset_dir,
+              RawOfflineConditionSource.ordered, RawOfflineConditionSource.select, _cache_tensor, _cache_value,
+              _cached_row_types, encode_raw_offline_conditions]
+    requires: [sft.dropout.core_contracts, algorithm.offline_dpo.contracts, algorithm.offline_dpo.raw_cache]
+    reason: Match the shared V2 decode, row formatting, order and collation with masked SFT CPU examples and native raw/cached preference pairs.
+  - paths: [src/flow_factory/trainers/common/offline_batch.py]
+    symbols: ['<definition_order>', resolve_offline_condition, '<import:flow_factory.data_utils.offline_conditions.encode_raw_offline_conditions>',
+              '<import:flow_factory.data_utils.offline_train_data.offline_preprocess_kwargs>']
+    requires: [sft.dropout.core_contracts, algorithm.offline_dpo.contracts, algorithm.offline_dpo.raw_cache]
+    reason: The raw condition is encoded once under no_grad before either trainer uses its adapter's input state.
+  - paths: [src/flow_factory/trainers/offline/offline_dpo.py]
+    symbols: [OfflineDPOTrainer.runtime_execution_identity_payload]
+    requires: [algorithm.offline_dpo.contracts, checkpoint.roundtrip, algorithm.offline_dpo.raw_cache]
+    reason: Cached checkpoints retain their identity and raw input acquisition participates in resume checks.
   - paths: [src/flow_factory/models/sft_dropout.py]
     symbols: ['<separable-caption-policy>', CaptionDropoutPolicy.share_across_references, resolve_sft_dropout]
     requires: [sft.dropout.core_contracts, sft.dropout.klein_fsdp2, sft.dropout.wan_continuation]

@@ -321,11 +321,6 @@ class Arguments(ArgABC):
                 "data.datasets; the legacy prompt-only data.dataset_dir path cannot carry "
                 "demonstration or preference supervision"
             )
-        if not self.data_args.enable_preprocess and self.training_args.trainer_type != "sft":
-            raise ValueError(
-                "dataset acquisition requires data.enable_preprocess=True so model-input "
-                "conditions use the input-only preprocessing cache"
-            )
         if self.data_args.sampler_type != "auto":
             raise ValueError(
                 "dataset acquisition uses torch.utils.data.DistributedSampler directly; "

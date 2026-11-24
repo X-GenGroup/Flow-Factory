@@ -804,7 +804,7 @@ def test_builder_delegates_distributed_condition_cache_to_rank_safe_orchestrator
 
 
 def test_sft_raw_cached_epoch_and_cache_reuse(tmp_path):
-    from flow_factory.data_utils.sft_conditions import encode_raw_sft_conditions
+    from flow_factory.data_utils.offline_conditions import encode_raw_offline_conditions
     from flow_factory.models.sft_dropout import CAPTION_DROPOUT
 
     class Encoder:
@@ -841,7 +841,7 @@ def test_sft_raw_cached_epoch_and_cache_reuse(tmp_path):
         )
 
     cached = build(False)
-    assert all(len(ds.sft_conditions.alternatives) == 1 for ds in cached.dataset.datasets)
+    assert all(len(ds.condition_source.alternatives) == 1 for ds in cached.dataset.datasets)
     first_calls = enc.calls
     hit = build(False)
     raw = build(True)
@@ -859,7 +859,9 @@ def test_sft_raw_cached_epoch_and_cache_reuse(tmp_path):
                 == reused.condition["_sft_mask"]
                 == actual.condition["_sft_mask"]
             )
-            selected = encode_raw_sft_conditions(actual.condition["_sft_raw"], enc.encode, {})
+            selected = encode_raw_offline_conditions(
+                actual.condition["_offline_raw"], enc.encode, {}
+            )
             torch.testing.assert_close(
                 selected["prompt_embeds"], expected.condition["prompt_embeds"]
             )
@@ -943,7 +945,7 @@ def test_sft_independent_caption_overlay_preserves_media_columns(tmp_path):
         sft_policy=SEPARABLE_CAPTION_DROPOUT,
         shuffle=False,
     )
-    alt = loader.dataset.datasets[0].sft_conditions.alternatives
+    alt = loader.dataset.datasets[0].condition_source.alternatives
     assert (
         len(alt) == 1 and "images" not in alt.column_names and "ref_tokens" not in alt.column_names
     )
@@ -951,3 +953,72 @@ def test_sft_independent_caption_overlay_preserves_media_columns(tmp_path):
         (0, 20),
         (0, 40),
     ]
+
+
+def test_preference_conditions_encode_once_per_record_on_training_rank(tmp_path):
+    from flow_factory.trainers.common.offline_batch import resolve_offline_condition
+
+    directory = tmp_path / "preferences"
+    directory.mkdir()
+    for name, value in (("a.png", 22), ("b.png", 198)):
+        _write_image(directory / name, value)
+    _write_manifest(
+        directory,
+        [
+            _preference_row("first prompt", "a.png", "b.png"),
+            _preference_row("second prompt", "b.png", "a.png"),
+        ],
+    )
+    config = _config(tmp_path, [_source("pairs", directory, 0)], per_device_batch_size=2)
+
+    class Encoder:
+        def __init__(self):
+            self.calls = []
+
+        def preprocess(self, prompt, *, guidance_scale, is_train):
+            self.calls.append((tuple(prompt), torch.is_grad_enabled(), guidance_scale, is_train))
+            return {"prompt_embeds": torch.tensor([[len(text), ord(text[0])] for text in prompt])}
+
+    def build(encoder):
+        return build_offline_train_dataloader(
+            config,
+            _Accelerator(),
+            encoder.preprocess,
+            supervision_type="preference",
+            pipeline_io_contract=_TEXT_TO_IMAGE_CONTRACT,
+            shuffle=False,
+        )
+
+    cached = next(iter(build(Encoder())))
+    config.data_args.enable_preprocess = False
+    encoder = Encoder()
+    loader = build(encoder)
+    raw = next(iter(loader))
+    assert not encoder.calls
+    assert raw.record_ids == cached.record_ids and raw.condition_ids == cached.condition_ids
+    assert list(raw.condition) == ["_offline_raw"]
+    trainer = SimpleNamespace(
+        adapter=SimpleNamespace(preprocess_func=encoder.preprocess),
+        config=config,
+        accelerator=SimpleNamespace(device="cpu"),
+    )
+    result = resolve_offline_condition(raw.condition, trainer)
+    assert result.keys() == cached.condition.keys()
+    torch.testing.assert_close(
+        result["prompt_embeds"], cached.condition["prompt_embeds"], rtol=0, atol=0
+    )
+    assert result["prompt"] == ["first prompt", "second prompt"]
+    assert encoder.calls == [
+        (("first prompt",), False, 3.0, True),
+        (("second prompt",), False, 3.0, True),
+    ]
+    for arm in ("chosen_media", "rejected_media"):
+        actual = getattr(raw.output, arm)
+        expected = getattr(cached.output, arm)
+        assert [assets[0].payload.tobytes() for assets in actual] == [
+            assets[0].payload.tobytes() for assets in expected
+        ]
+    assert (
+        raw.output.chosen_media[0][0].payload.tobytes()
+        != raw.output.rejected_media[0][0].payload.tobytes()
+    )

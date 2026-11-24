@@ -43,7 +43,7 @@ from ..common.group_noise import (
     independent_batch_generator,
     record_noise_ids,
 )
-from ..common.offline_batch import bind_prepared_condition_output, move_condition_to_device
+from ..common.offline_batch import bind_prepared_condition_output, resolve_offline_condition
 from ..forward_process import forward_velocity_state
 
 MetricAccumulator = Dict[str, List[torch.Tensor]]
@@ -67,12 +67,19 @@ class OfflineDPOTrainer(BaseTrainer):
         )
         return dataloader, {}
 
+    def runtime_execution_identity_payload(self) -> Dict[str, Any]:
+        """Preserve cached checkpoint identity and record on-demand preprocessing."""
+        identity = super().runtime_execution_identity_payload()
+        if not self.config.data_args.enable_preprocess:
+            identity["preference_condition_input"] = "on_demand"
+        return identity
+
     def optimize_batch(self, batch: Any) -> None:
         """Apply one gradient-accumulation microstep from a preference batch."""
         preference = _require_preference_batch(batch)
         self.adapter.train()
 
-        condition = move_condition_to_device(batch.condition, self.accelerator.device)
+        condition = resolve_offline_condition(batch.condition, self)
         prepared_condition = self.adapter.prepare_condition_state(condition)
         identity = record_noise_ids(batch.record_ids)
         # Seeded from the record identity rather than the process RNG, which is
