@@ -18427,3 +18427,65 @@ cases:
     packages: [pytest, torch, accelerate, diffusers, transformers, peft, av]
     environment: {OMP_NUM_THREADS: '1', MKL_NUM_THREADS: '1'}
     model_paths: []
+- id: sft-image-caption-dropout
+  covers:
+  - sft.dropout.images
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/models/flux/flux1.py
+  - src/flow_factory/models/flux/flux1_kontext.py
+  - src/flow_factory/models/flux/flux2.py
+  - src/flow_factory/models/flux/flux2_klein.py
+  - src/flow_factory/models/flux/flux3.py
+  - src/flow_factory/models/qwen_image/qwen_image.py
+  - src/flow_factory/models/qwen_image/qwen_image_edit_plus.py
+  - src/flow_factory/models/qwen_image_21/qwen_image_21.py
+  - src/flow_factory/models/stable_diffusion/sd3_5.py
+  - src/flow_factory/models/z_image/z_image.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_sft_image_caption_dropout.py
+  fixture: Compare SD3.5 and FLUX.2 Klein native empty-caption embeddings and unmixed velocity, keeping
+    ordered references; cover Qwen image-aware text and mode validation.
+  fixture_kind: model_structure
+  qa: Q1
+  backend: cuda
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Compare SD3.5 and FLUX.2 Klein native empty-caption embeddings and unmixed velocity,
+      keeping ordered references; cover Qwen image-aware text and mode validation.
+    reward: none
+  artifacts:
+  - tests/distributed/test_sft_image_caption_dropout.py
+  - tests/distributed/sd35_cp_fixture.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/flux_sft_fixture.py
+  - tests/distributed/test_sd35_context_parallel.py
+  - tests/distributed/qwen_edit_cp_fixture.py
+  - tests/distributed/qwen21_cp_fixture.py
+  cost_seconds: 25
+  resources:
+    gpus: 1
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
