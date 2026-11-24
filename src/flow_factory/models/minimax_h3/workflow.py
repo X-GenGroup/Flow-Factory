@@ -183,6 +183,9 @@ def preprocess_h3_workflow(adapter: Any, **kwargs: Any) -> Dict[str, Any]:
     _validate_public_no_cfg_inputs(adapter.workflow, kwargs, "preprocess")
     _validate_workflow_media_inputs(adapter.workflow, kwargs, "preprocess")
     prompt = _single_outer_value(kwargs.get("prompt"), "prompt", adapter.workflow)
+    if adapter.workflow == "t2va" and prompt == "":
+        # This checkpoint's Qwen tokenizer adds no row for an empty string.
+        prompt = adapter.sft_condition_dropout_policy.empty_prompt
     values: Dict[str, Any] = {
         "prompt": prompt,
         "height": kwargs["height"],

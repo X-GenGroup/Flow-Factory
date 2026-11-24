@@ -222,3 +222,30 @@ def test_i2av_preprocess_forwards_cached_negative_prompt_to_text_encoder() -> No
     )
 
     assert captured["negative_prompt"] == ["avoid blur"]
+
+
+@pytest.mark.parametrize("adapter_class", ADAPTER_CLASSES)
+def test_caption_dropout_rebuilds_both_ltx2_connector_streams(adapter_class):
+    def encode_text(texts, _length, device, dtype):
+        ids = torch.tensor([[1, len(text)] for text in texts], device=device)
+        return ids, ids.unsqueeze(-1).to(dtype), ids.ne(0)
+
+    encoder = SimpleNamespace(
+        pipeline=SimpleNamespace(
+            connectors=lambda embeddings, mask: (embeddings, embeddings + 1, mask)
+        ),
+        _encode_text=encode_text,
+    )
+    kwargs = dict(guidance_scale=4.0, dtype=torch.float32, device=torch.device("cpu"))
+    positive = adapter_class.encode_prompt(encoder, ["the scene"], **kwargs)
+    dropped = adapter_class.encode_prompt(
+        encoder, [adapter_class.sft_condition_dropout_policy.empty_prompt], **kwargs
+    )
+    for field in (
+        "prompt_ids",
+        "connector_prompt_embeds",
+        "connector_audio_prompt_embeds",
+        "connector_attention_mask",
+    ):
+        torch.testing.assert_close(dropped[field], positive[f"negative_{field}"])
+        assert not torch.equal(dropped[field], positive[field])

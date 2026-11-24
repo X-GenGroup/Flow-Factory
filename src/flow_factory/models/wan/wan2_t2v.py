@@ -57,6 +57,7 @@ from ..parallelism.sequence import (
 )
 from ..parallelism.tensor import ShardedAcrossHeadRMSNorm, SharedInputColwiseParallel
 from ..pipeline_contracts import video_output_contract
+from ..sft_dropout import CAPTION_DROPOUT
 from ._context_parallel import WanContextParallelLayout, compose_wan_sequence_boundaries
 from ._cp_contract import (
     validate_wan_context_parallel_configs,
@@ -112,6 +113,7 @@ class Wan2_T2V_Adapter(BaseAdapter):
         "text_encoders": torch.bfloat16,
         "vae": torch.float32,
     }
+    sft_condition_dropout_policy = CAPTION_DROPOUT
     pipeline_io_contract = video_output_contract(
         negative_prompt=NegativePromptPolicy.OPTIONAL,
         output_fps=RateRequirement.REQUIRED,
