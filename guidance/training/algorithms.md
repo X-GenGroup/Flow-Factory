@@ -466,7 +466,7 @@ train:
 train:
     num_train_timesteps: 0    # 0 ⇒ int(num_inference_steps * (timestep_range[1] - timestep_range[0])).
     time_sampling_strategy: 'discrete'  # Options: discrete, discrete_with_init, discrete_wo_init, uniform, logit_normal.
-    time_shift: 3.0           # Shift for logit_normal / uniform strategies.
+    time_shift: 3.0           # For logit_normal / uniform, larger values favor higher noise.
     timestep_range: 0.6       # Float ⇒ (0, x); tuple ⇒ (lo, hi) along the 1000→0 denoise axis.
 ```
 

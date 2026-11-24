@@ -98,7 +98,7 @@ train:
   # [0, frac], so `timestep_range: 0.6` keeps timesteps in [400, 1000]:
   num_train_timesteps: 4            # base: config.num_train_timesteps = 4
   time_sampling_strategy: discrete  # integer-index broadcast semantics
-  time_shift: 3.0                   # base: config.flow_shift = 3
+  time_shift: 3.0                   # Continuous sampling only. Larger values favor higher noise.
   timestep_range: 0.6               # equivalent to trunc_steps=6 at num_inference_steps=10
 
   # ---------- KL divergence ----------

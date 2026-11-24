@@ -70,7 +70,9 @@ class OfflineFlowMatchingTrainingArguments(TrainingArguments):
     )
     time_shift: float = field(
         default=1.0,
-        metadata={"help": "Positive rational shift applied to sampled timestep fractions."},
+        metadata={
+            "help": "Noise-odds multiplier. 1.0 is neutral; larger values favor higher noise."
+        },
     )
     logit_mean: float = field(
         default=0.0,

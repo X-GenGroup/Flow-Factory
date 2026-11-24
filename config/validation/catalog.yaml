@@ -59,6 +59,43 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: continuous-time-sampling-contracts
+  covers: [time_sampling.continuous]
+  facets: [objective, time_sampling]
+  owners:
+  - src/flow_factory/utils/noise_schedule.py
+  - tests/test_noise_schedule.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - tests/test_noise_schedule.py
+  - tests/hparams/test_offline_training_args.py
+  - tests/examples/test_offline_examples.py
+  - tests/trainers/test_offline_flow_matching.py
+  - -k
+  - not cuda
+  fixture: Seeded shared and independent timestep draws plus production configuration and offline loss contracts.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: assertions
+    description: Verify the noise-odds formula, shift direction, range mapping, reproducibility and inactive discrete sampling.
+    reward: none
+  artifacts:
+  - tests/test_noise_schedule.py
+  - tests/hparams/test_offline_training_args.py
+  - tests/examples/test_offline_examples.py
+  - tests/trainers/test_offline_flow_matching.py
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers]
+    environment: {OMP_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []
 - id: tp-plan-structure-contracts
   covers:
   - parallel.tp_plan_structure

@@ -10,6 +10,25 @@ timestep does not imply using the same latent or the same objective.
 | Actual transition replay | `scheduler.replay_steps` | Which recorded transitions ART/GRPO/Guard/DPPO optimize |
 | Endpoint re-noising | `train.time_sampling_strategy`, `timestep_range`, `time_shift`, `num_train_timesteps` | How NFT/AWM/DGPO/CRD draw training coordinates and construct new noisy states |
 
+## Shift continuous training timesteps
+
+For `uniform` and `logit_normal` training sampling, `train.time_shift` is a
+positive multiplier on the noise odds `sigma / (1 - sigma)`. At `1.0` the
+transform is neutral. Larger values move draws toward higher noise. With the
+full timestep range, shift `2.0` maps an unshifted sigma of `0.5` to `2/3`.
+Uniform sampling applies the shift after mapping the draw to the configured
+range. Logit-normal sampling shifts and clamps the unit draw before mapping it.
+Discrete training samples already shifted rollout grid points. The inference
+scheduler sets its own shift.
+
+For a recipe using the older convention, take the reciprocal of the previous
+`train.time_shift` to preserve its intended distribution. For example, old
+`0.5` becomes `2.0` and old `3.0` becomes `0.3333333333333333`. This also
+applies to a previously implicit default when using a continuous strategy.
+Exact-state restore rejects older checkpoints that used a non-neutral
+continuous shift. Use the original version for exact continuation or load the
+model weights into a new run with the migrated value.
+
 ## Select actual rollout transitions
 
 `scheduler.replay_steps` uses **zero-based transition indices**, not timestep values.
@@ -168,9 +187,8 @@ It does **not** restore the corresponding rollout intermediate state.
 
 The shared time sampler also supports `discrete_with_init`, `discrete_wo_init`,
 `uniform` and `logit_normal`. `num_train_timesteps` counts newly drawn loss terms;
-it is independent of the number of retained rollout transitions. These existing
-`train.*` fields, defaults and RNG streams remain unchanged. `replay_steps` does
-not select the training times or add intermediate storage for endpoint objectives.
+it is independent of the number of retained rollout transitions. `replay_steps`
+controls rollout retention. The training sampler draws its own times for endpoint objectives.
 
 For example, NFT can train at ten grid-sampled coordinates while retaining only
 one final latent. Setting `replay_steps: null` does not discard that required

@@ -9,6 +9,13 @@ static_paths:
   - .dockerignore
   - assets/**
 owners:
+  - paths: [src/flow_factory/utils/noise_schedule.py, tests/test_noise_schedule.py,
+            src/flow_factory/hparams/training_args/_offline.py, src/flow_factory/hparams/training_args/awm.py,
+            src/flow_factory/hparams/training_args/crd.py, src/flow_factory/hparams/training_args/dgpo.py,
+            src/flow_factory/hparams/training_args/dpo.py, src/flow_factory/hparams/training_args/nft.py]
+    catalog_test_owner: true
+    requires: [time_sampling.continuous]
+    reason: Verify the noise shift, timestep range and per-sample geometry in shared training samplers.
   - paths: [src/flow_factory/hparams/training_args/drtune.py, src/flow_factory/trainers/rl/drtune.py,
             examples/drtune/**, tests/trainers/test_drtune.py, tests/distributed/test_drtune_training.py]
     requires: [algorithm.drtune.contracts, algorithm.drtune.ddp, algorithm.drtune.fsdp2]

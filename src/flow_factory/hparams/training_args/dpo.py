@@ -82,7 +82,9 @@ class DPOTrainingArguments(TrainingArguments):
     )
     time_shift: float = field(
         default=1.0,
-        metadata={"help": "Time shift for logit-normal timestep sampling. 1.0 = no shift."},
+        metadata={
+            "help": "Noise-odds multiplier. 1.0 is neutral; larger values favor higher noise."
+        },
     )
     timestep_range: Union[float, Tuple[float, float]] = field(
         default=0.99,

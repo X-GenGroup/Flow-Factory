@@ -40,6 +40,7 @@ from flow_factory.hparams.optimizer_args import (
 from flow_factory.models.pipeline_contracts import image_output_contract
 from flow_factory.trainers.common.runtime_identity import (
     build_default_data_identity_payload,
+    build_default_execution_identity_payload,
     build_trainer_runtime_identity,
 )
 
@@ -352,6 +353,37 @@ def test_effective_pipeline_contract_changes_execution_identity() -> None:
 
     assert changed["execution_contract_digest"] != baseline["execution_contract_digest"]
     assert changed["data_contract_digest"] == baseline["data_contract_digest"]
+
+
+@pytest.mark.parametrize(
+    ("field", "strategy", "shift", "should_version"),
+    [
+        ("weighting_scheme", "logit_normal", 0.5, True),
+        ("weighting_scheme", "uniform", 2.0, True),
+        ("time_sampling_strategy", "Uniform", 2.0, True),
+        ("time_sampling_strategy", "discrete", 3.0, False),
+        ("weighting_scheme", "uniform", 1.0, False),
+    ],
+)
+def test_exact_resume_versions_only_active_non_neutral_training_shifts(
+    field: str, strategy: str, shift: float, should_version: bool
+) -> None:
+    trainer = _Trainer()
+    setattr(trainer.training_args, field, strategy)
+    trainer.training_args.time_shift = shift
+    payload = build_default_execution_identity_payload(trainer)
+    assert payload.get("training_time_shift_convention") == (
+        "noise_odds_multiplier" if should_version else None
+    )
+
+    def legacy_payload() -> dict[str, Any]:
+        legacy = build_default_execution_identity_payload(trainer)
+        legacy.pop("training_time_shift_convention", None)
+        return legacy
+
+    current = build_trainer_runtime_identity(trainer)
+    trainer.runtime_execution_identity_payload = legacy_payload
+    assert (build_trainer_runtime_identity(trainer) != current) == should_version
 
 
 @pytest.mark.parametrize(

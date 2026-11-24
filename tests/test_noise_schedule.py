@@ -147,6 +147,52 @@ def test_legacy_time_samplers_keep_shared_batch_coordinates(sampler_name: str) -
         torch.testing.assert_close(row, row[0].expand_as(row), rtol=0, atol=0)
 
 
+@pytest.mark.parametrize(
+    "sampler_name",
+    ["uniform", "independent_uniform", "logit_normal_shifted", "independent_logit_normal_shifted"],
+)
+@pytest.mark.parametrize("timestep_range", [(0.0, 1.0), (0.15, 0.8)])
+def test_continuous_time_shift_multiplies_noise_odds(
+    sampler_name: str, timestep_range: tuple[float, float]
+) -> None:
+    sampler = getattr(TimeSampler, sampler_name)
+    is_logit_normal = "logit_normal" in sampler_name
+    kwargs = {"logit_std": 0.3} if is_logit_normal else {}
+
+    def sample(shift: float) -> torch.Tensor:
+        return sampler(
+            3,
+            7,
+            timestep_range,
+            time_shift=shift,
+            generator=torch.Generator().manual_seed(41),
+            **kwargs,
+        )
+
+    neutral = sample(1.0)
+    noisier = sample(4.0)
+    cleaner = sample(0.25)
+    assert torch.all(noisier > neutral)
+    assert torch.all(neutral > cleaner)
+
+    frac_lo, frac_hi = timestep_range
+    span = frac_hi - frac_lo
+    sigma = neutral / TIMESTEP_MAX
+    if is_logit_normal:
+        sigma = 1.0 - (1.0 - sigma - frac_lo) / span
+    for shift, observed in ((4.0, noisier), (0.25, cleaner)):
+        shifted = shift * sigma / (1.0 + (shift - 1.0) * sigma)
+        if is_logit_normal:
+            shifted = 1.0 - (frac_lo + (1.0 - shifted).clamp(0.01, 1.0 - 1e-6) * span)
+        torch.testing.assert_close(observed, TIMESTEP_MAX * shifted, atol=2e-4, rtol=1e-6)
+
+
+@pytest.mark.parametrize("shift", [0.0, -1.0, float("nan"), float("inf"), True])
+def test_continuous_time_shift_requires_a_finite_positive_multiplier(shift: float) -> None:
+    with pytest.raises(ValueError, match="time_shift must be a finite positive number"):
+        TimeSampler.independent_uniform(2, 3, 1.0, time_shift=shift)
+
+
 @pytest.mark.parametrize("field_name", ["batch_size", "num_timesteps"])
 @pytest.mark.parametrize("invalid", [0, -1, True, 1.0])
 def test_independent_time_samplers_validate_materialized_shape(
