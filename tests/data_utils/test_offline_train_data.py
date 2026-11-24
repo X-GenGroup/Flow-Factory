@@ -649,7 +649,7 @@ def test_builder_rejects_missing_target_decoder_before_condition_preprocessing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        offline_train_data,
+        offline_dataset_module,
         "DEFAULT_MEDIA_DECODERS",
         {
             media_type: decoder
@@ -683,7 +683,7 @@ def test_builder_rejects_missing_target_decoder_before_condition_preprocessing(
 
     with pytest.raises(
         NotImplementedError,
-        match=r"source 'audio'.*type 'audio'.*target\.wav",
+        match=r"source 'audio'.*target media 0.*target\.wav.*type 'audio' with no decoder",
     ):
         build_offline_train_dataloader(
             _config(tmp_path, [_source("audio", dataset_dir, 0)]),
@@ -1022,3 +1022,22 @@ def test_preference_conditions_encode_once_per_record_on_training_rank(tmp_path)
         raw.output.chosen_media[0][0].payload.tobytes()
         != raw.output.rejected_media[0][0].payload.tobytes()
     )
+
+
+def test_builder_rejects_worker_decoder_before_encoding_preferences(tmp_path):
+    source = tmp_path / "pairs"
+    source.mkdir()
+    _write_image(source / "chosen.png", 32)
+    _write_image(source / "rejected.png", 192)
+    _write_manifest(source, [_preference_row("edit", "chosen.png", "rejected.png")])
+    encoder = _CountingPreprocessor()
+    with pytest.raises(TypeError, match="module scope for spawn"):
+        build_offline_train_dataloader(
+            _config(tmp_path, [_source("pairs", source, 0)]),
+            _Accelerator(),
+            encoder.preprocess,
+            supervision_type="preference",
+            pipeline_io_contract=_TEXT_TO_IMAGE_CONTRACT,
+            media_decoders={"image": lambda asset: asset},
+        )
+    assert encoder.calls == 0

@@ -47,6 +47,7 @@ try:
 except ImportError:
     av = None
 
+from .dataset import collate_model_inputs
 from .schema import (
     DatasetRecordV2,
     DemonstrationSupervision,
@@ -255,14 +256,8 @@ class OfflineDataset(Dataset):
                 context=f"offline dataset index {index}",
             )
 
-        decoders: Dict[MediaType, MediaDecoder] = dict(DEFAULT_MEDIA_DECODERS)
-        if media_decoders is not None:
-            for media_type, decoder in media_decoders.items():
-                if media_type not in ("image", "video", "audio"):
-                    raise ValueError(f"unsupported media decoder type: {media_type!r}")
-                _require_picklable_unbound_decoder(media_type, decoder)
-                decoders[media_type] = decoder
-        _require_supervision_decoder_coverage(
+        decoders = resolve_media_decoders(media_decoders)
+        require_supervision_decoders(
             normalized_records,
             decoders,
             source_name=source_name,
@@ -771,25 +766,40 @@ def _extract_condition(
     return {key: value for key, value in row.items() if key != OFFLINE_CONDITION_ID_COLUMN}
 
 
-def _require_supervision_decoder_coverage(
+def resolve_media_decoders(
+    overrides: Mapping[MediaType, MediaDecoder] | None,
+) -> dict[MediaType, MediaDecoder]:
+    """Resolve the decoder registry and validate overrides before workers or caches start."""
+    decoders = dict(DEFAULT_MEDIA_DECODERS)
+    for media_type, decoder in (overrides or {}).items():
+        if media_type not in ("image", "video", "audio"):
+            raise ValueError(f"unsupported media decoder type: {media_type!r}")
+        _require_picklable_unbound_decoder(media_type, decoder)
+        decoders[media_type] = decoder
+    return decoders
+
+
+def supervision_candidates(
+    record: NormalizedDatasetRecord,
+) -> tuple[tuple[str, NormalizedOutputCandidate], ...]:
+    """Return supervised output arms in manifest order for offline input checks."""
+    supervision = record.supervision
+    if isinstance(supervision, DemonstrationSupervision):
+        return (("target", supervision.target),)
+    if isinstance(supervision, PreferenceSupervision):
+        return (("chosen", supervision.chosen), ("rejected", supervision.rejected))
+    raise ValueError("offline supervision requires a demonstration or preference pair")
+
+
+def require_supervision_decoders(
     records: Sequence[NormalizedDatasetRecord],
     decoders: Mapping[MediaType, MediaDecoder],
     *,
     source_name: str,
 ) -> None:
+    """Require a decoder for every target asset before any inputs are preprocessed."""
     for record_index, record in enumerate(records):
-        supervision = record.supervision
-        candidates: tuple[tuple[str, NormalizedOutputCandidate], ...]
-        if isinstance(supervision, DemonstrationSupervision):
-            candidates = (("target", supervision.target),)
-        elif isinstance(supervision, PreferenceSupervision):
-            candidates = (
-                ("chosen", supervision.chosen),
-                ("rejected", supervision.rejected),
-            )
-        else:
-            continue
-        for candidate_name, candidate in candidates:
+        for candidate_name, candidate in supervision_candidates(record):
             for media_index, asset in enumerate(candidate.media):
                 if asset.type not in decoders:
                     raise NotImplementedError(
@@ -803,8 +813,7 @@ def _require_supervision_decoder_coverage(
 def _collate_condition_mappings(
     conditions: Sequence[Mapping[str, Any]],
 ) -> Dict[str, Any]:
-    expected_keys = tuple(conditions[0].keys())
-    expected_key_set = set(expected_keys)
+    expected_key_set = set(conditions[0])
     for index, condition in enumerate(conditions):
         if set(condition.keys()) != expected_key_set:
             raise ValueError(
@@ -813,26 +822,7 @@ def _collate_condition_mappings(
                 f"{sorted(condition.keys())!r} at batch index {index}"
             )
 
-    collated: Dict[str, Any] = {}
-    for key in expected_keys:
-        values = [condition[key] for condition in conditions]
-        if all(isinstance(value, torch.Tensor) for value in values):
-            shapes = [value.shape for value in values]
-            collated[key] = (
-                torch.stack(values, dim=0)
-                if all(shape == shapes[0] for shape in shapes)
-                else values
-            )
-        elif any(isinstance(value, torch.Tensor) for value in values) and any(
-            isinstance(value, list) for value in values
-        ):
-            collated[key] = [
-                list(torch.unbind(value, dim=0)) if isinstance(value, torch.Tensor) else value
-                for value in values
-            ]
-        else:
-            collated[key] = values
-    return collated
+    return collate_model_inputs(conditions)
 
 
 def _validate_supervision_type(supervision_type: str) -> None:

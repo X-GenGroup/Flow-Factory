@@ -4641,3 +4641,24 @@ def test_refl_prepared_forward_routes_keep_unused_heads_and_conditional_shards()
         "algorithm.refl.wan_dual_fsdp",
     } <= set(obligations)
     assert not any(key.startswith("review.") for key in obligations)
+
+
+def test_offline_decoder_route_keeps_unclassified_dataset_changes_visible():
+    path = "src/flow_factory/data_utils/offline_dataset.py"
+    policy = yaml.safe_load((ROOT / planner.POLICY).read_text())
+
+    def obligations(symbols):
+        scope = {
+            "paths": [path],
+            "facets": ["data_schema"],
+            "scope_complete": True,
+            "semantic_symbols": {path: symbols},
+        }
+        return planner.infer_requirements(scope, policy, {path: symbols})["obligations"]
+
+    assert {
+        "evaluation.contracts",
+        "sft.dropout.core_contracts",
+        "algorithm.offline_dpo.raw_cache",
+    } <= set(obligations(["resolve_media_decoders"]))
+    assert f"review.owner:{path}" in obligations(["resolve_media_decoders", "unrecognized"])
