@@ -18604,3 +18604,158 @@ cases:
       OMP_NUM_THREADS: '1'
       CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
+- id: sft-bagel-dropout-fsdp2
+  covers:
+  - sft.dropout.bagel
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/models/bagel/bagel.py
+  - src/flow_factory/models/bagel/modeling/bagel/bagel.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_bagel_parallel.py::test_cuda_bagel_sft_divergent_dropout_fsdp
+  fixture: Verify rank-divergent semantic branches against native conditioning, aligned FSDP2 collectives,
+    finite nonzero derivatives on every rank.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Verify rank-divergent semantic branches against native conditioning, aligned FSDP2 collectives,
+      finite nonzero derivatives on every rank.
+    reward: none
+  artifacts:
+  - tests/distributed/test_bagel_parallel.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 120
+  resources:
+    gpus: 2
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: sft-sensenova-dropout-fsdp2
+  covers:
+  - sft.dropout.sensenova
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/models/sensenova/sensenova.py
+  - src/flow_factory/models/sensenova/modeling/neo_unify/modeling_neo_chat.py
+  - src/flow_factory/models/sensenova/pipeline.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_sensenova_context_parallel.py::test_cuda_sensenova_sft_divergent_dropout_fsdp
+  fixture: Verify rank-divergent semantic branches against native conditioning, aligned FSDP2 collectives,
+    finite nonzero derivatives on every rank.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Verify rank-divergent semantic branches against native conditioning, aligned FSDP2 collectives,
+      finite nonzero derivatives on every rank.
+    reward: none
+  artifacts:
+  - tests/distributed/test_sensenova_context_parallel.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 120
+  resources:
+    gpus: 2
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: sft-packed-dropout-contracts
+  covers:
+  - sft.dropout.packed_contracts
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/models/sft_recipes.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/models/test_packed_sft_recipes.py
+  - tests/distributed/test_bagel_parallel.py::test_bagel_sft_independent_visual_streams
+  - tests/models/test_sensenova.py
+  fixture: Check native probability laws, independent visual streams and ordinary SenseNova conditioning
+    before prepared proofs.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Check native probability laws, independent visual streams and ordinary SenseNova conditioning
+      before prepared proofs.
+    reward: none
+  artifacts:
+  - tests/models/test_packed_sft_recipes.py
+  - tests/distributed/test_bagel_parallel.py
+  - tests/models/test_sensenova.py
+  cost_seconds: 25
+  resources:
+    gpus: 0
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    environment:
+      OMP_NUM_THREADS: '1'
+      CUDA_VISIBLE_DEVICES: '-1'
+    model_paths: []
