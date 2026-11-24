@@ -2025,6 +2025,7 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
         (
             "flux_sft_fixture.py",
             {
+                "sft-image-caption-dropout",
                 "refl-sd35-ddp",
                 "refl-flux-tp-cp",
                 "refl-real-pickscore-cuda",
