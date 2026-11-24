@@ -184,5 +184,6 @@ class OfflineConditionSampler(DistributedSampler):
     def set_epoch(self, epoch: int) -> None:
         super().set_epoch(epoch)
         for source in self.dataset.datasets:
-            if source.sft_conditions is not None:
-                source.sft_conditions.epoch = epoch
+            view = source.condition_source
+            if hasattr(view, "epoch"):
+                view.epoch = epoch

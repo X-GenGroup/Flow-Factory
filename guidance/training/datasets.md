@@ -645,7 +645,7 @@ empty (a dataset with fewer rows than ranks) writes a zero-row part in the same 
 datasets preprocess on any number of ranks. `force_reprocess` defaults to `true`, which rebuilds the
 cache on every launch; set it to `false` to reuse a cache whose fingerprint matches.
 
-SFT can alternatively select the condition per training record and encode it on demand with `data.enable_preprocess: false`. See [SFT condition dropout](sft-conditioning.md).
+For offline SFT and offline DPO, set `data.enable_preprocess: false` to decode input media in loader workers and encode conditions on the training rank as each batch arrives. This avoids writing an input cache and repeats encoding on later traversals. DPO prepares the complete prompt and references once per preference pair and shares them across the chosen and rejected candidates and the policy and reference passes. SFT can also sample a [dropped condition](sft-conditioning.md). Keep the preprocessing mode fixed for exact resume.
 
 Prompt encoders, condition VAEs, and processors are preprocessing components. Online RL can
 offload them after cache creation because optimization consumes cached conditions. Offline SFT and

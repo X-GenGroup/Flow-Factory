@@ -15,8 +15,8 @@
 """Offline records, on-demand target decoding, and explicit collation.
 
 The input-condition cache and output supervision intentionally have different
-lifecycles. Prompt and condition encodings are fetched from a cache by stable
-record index, while target, chosen, and rejected media are decoded from their
+lifecycles. Input conditions are fetched by stable record index and can be encoded
+in advance or on the training rank. Target, chosen, and rejected media are decoded from their
 source paths on every ``__getitem__`` call. This module never caches output
 pixels or model-specific output latents and never holds a model adapter.
 """
@@ -97,7 +97,7 @@ DecodedOutput = Union[DemonstrationOutput, PreferenceOutput]
 
 @dataclass(frozen=True, slots=True)
 class OfflineItem:
-    """One cached input condition paired with freshly decoded supervision."""
+    """One model input paired with freshly decoded supervision."""
 
     condition: Mapping[str, Any]
     condition_id: str
@@ -204,7 +204,7 @@ def load_offline_manifest(
 
 
 class OfflineDataset(Dataset):
-    """Bind normalized offline records to a separately built condition cache.
+    """Bind normalized offline records to raw or precomputed input rows.
 
     Every condition-cache row must carry :data:`OFFLINE_CONDITION_ID_COLUMN`.
     Its input-only identity must match ``records[index]`` before the cache is
@@ -222,7 +222,7 @@ class OfflineDataset(Dataset):
         supervision_type: OfflineSupervisionType,
         media_decoders: Mapping[MediaType, MediaDecoder] | None = None,
         _media_digest_cache: MutableMapping[str, str] | None = None,
-        sft_conditions=None,
+        condition_source=None,
     ) -> None:
         _validate_supervision_type(supervision_type)
         if not isinstance(source_name, str) or not source_name.strip():
@@ -295,7 +295,7 @@ class OfflineDataset(Dataset):
             condition_ids.append(condition_id)
             record_ids.append(record_id)
 
-        self.sft_conditions = sft_conditions
+        self.condition_source = condition_source
         self._records = normalized_records
         self._condition_cache = stable_condition_cache
         self._condition_cache_length = len(stable_condition_cache)
@@ -331,8 +331,10 @@ class OfflineDataset(Dataset):
             mismatch_error=RuntimeError,
         )
 
-        if self.sft_conditions is not None:
-            condition = self.sft_conditions.select(index, record.model_input, record_id, condition)
+        if self.condition_source is not None:
+            condition = self.condition_source.select(
+                index, record.model_input, record_id, condition
+            )
 
         supervision = record.supervision
         if self.supervision_type == "demonstration":

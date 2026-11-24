@@ -49,6 +49,7 @@ from .offline_condition_cache import (
     compute_offline_condition_source_hash,
     project_offline_condition_dataset,
 )
+from .offline_conditions import RawOfflineConditionSource
 from .offline_dataset import (
     DEFAULT_MEDIA_DECODERS,
     OFFLINE_CONDITION_ID_COLUMN,
@@ -89,7 +90,7 @@ def build_offline_train_dataloader(
 
     Every enabled training source is parsed from
     ``{dataset_dir}/{train.split}.jsonl`` as homogeneous V2 supervision. Only the
-    normalized input projection enters distributed Arrow preprocessing; target,
+    normalized input projection is cached or sent to the on-demand encoder; target,
     chosen, rejected, and metadata fields remain attached to ``OfflineDataset`` and
     are decoded on demand.
 
@@ -113,7 +114,7 @@ def build_offline_train_dataloader(
 
     Returns:
         A finite DataLoader whose dataset retains only normalized records and
-        detached Hugging Face condition datasets, never a bound adapter wrapper.
+        detached input rows. Bound model encoders stay on the training rank.
 
     Raises:
         TypeError: If callable, mapping, or source fields have invalid types.
@@ -167,13 +168,8 @@ def build_offline_train_dataloader(
             "offline pipeline contract requires per_device_batch_size=1 for "
             f"single-sample execution, received {training_args.per_device_batch_size!r}"
         )
-    if not data_args.enable_preprocess and (
-        supervision_type != "demonstration" or getattr(training_args, "trainer_type", None) != "sft"
-    ):
-        raise ValueError(
-            "offline train data requires data.enable_preprocess=True so cached rows contain "
-            "adapter input conditions rather than raw V2 projections"
-        )
+    if sft_policy is not None and supervision_type != "demonstration":
+        raise ValueError("SFT condition dropout requires demonstration supervision")
     training_sources = tuple(data_args.training_datasets)
     _validate_training_sources(training_sources)
 
@@ -252,7 +248,7 @@ def build_offline_train_dataloader(
         else:
             condition_cache = _build_distributed_condition_cache(records, **cache_options)
         view = None
-        if raw or sft_policy is not None:
+        if sft_policy is not None:
             view = SFTConditionSource(
                 policy=sft_policy,
                 mode=getattr(training_args, "condition_dropout", 0),
@@ -296,6 +292,8 @@ def build_offline_train_dataloader(
                         f"SFT absent-condition cache identity mismatch for source {source.name!r}"
                     )
                 view.indices = tuple(indices)
+        elif raw:
+            view = RawOfflineConditionSource(dataset_dir, ordered_references)
         dataset = OfflineDataset(
             records,
             condition_cache,
@@ -304,7 +302,7 @@ def build_offline_train_dataloader(
             supervision_type=supervision_type,
             media_decoders=media_decoders,
             _media_digest_cache=media_digest_cache,
-            sft_conditions=view,
+            condition_source=view,
         )
         offline_datasets.append(dataset)
 

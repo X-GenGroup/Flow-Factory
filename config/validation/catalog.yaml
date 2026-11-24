@@ -18936,3 +18936,42 @@ cases:
     environment:
       OMP_NUM_THREADS: '1'
     model_paths: []
+- id: klein-offline-dpo-raw-cache-fsdp2
+  covers: [algorithm.offline_dpo.raw_cache]
+  facets: [data_schema, objective, parity, distributed]
+  owners:
+  - src/flow_factory/data_utils/offline_conditions.py
+  - src/flow_factory/trainers/offline/offline_dpo.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_offline_dpo_inputs_fsdp2.py::test_klein_offline_dpo_raw_and_cached_fsdp2_edit_update
+  fixture: Tiny native Flux2-Klein editing with chosen and rejected image targets; raw and cached condition acquisition on two FSDP2 LoRA ranks.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology: {nodes: 1, ranks_per_node: 2, dp_replicate: 1, dp_shard: 2, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Compare raw and cached ordered reference operands, target arms, noise, timestep, reference and policy predictions, gradients and parameter updates against independent preference-loss derivatives.
+  artifacts:
+  - tests/distributed/test_offline_dpo_inputs_fsdp2.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/conftest.py
+  - tests/distributed/offline_dpo_observations.py
+  - tests/distributed/native_observation_utils.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 120
+  resources:
+    gpus: 2
+    packages: [torch, pytest, diffusers, transformers, accelerate, peft, datasets, pillow, numpy, tokenizers]
+    environment: {OMP_NUM_THREADS: '1', TOKENIZERS_PARALLELISM: 'false'}
+    model_paths: []

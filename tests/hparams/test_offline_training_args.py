@@ -286,7 +286,7 @@ def test_sft_dropout_yaml_and_default():
 
 
 @pytest.mark.parametrize("trainer_type", ["sft", "offline-dpo"])
-def test_only_sft_admits_raw_offline_conditions(trainer_type):
+def test_offline_trainers_admit_raw_conditions(trainer_type):
     options = {
         "train": {"trainer_type": trainer_type},
         "data": {
@@ -296,9 +296,9 @@ def test_only_sft_admits_raw_offline_conditions(trainer_type):
     }
     if trainer_type == "sft":
         options["train"]["condition_dropout"] = 0
-        config = Arguments.from_dict(options)
-        assert config.data_args.enable_preprocess is False
+    config = Arguments.from_dict(options)
+    assert config.data_args.enable_preprocess is False
+    if trainer_type == "sft":
         assert config.training_args.condition_dropout == 0
     else:
-        with pytest.raises(ValueError, match="data.enable_preprocess=True"):
-            Arguments.from_dict(options)
+        assert not hasattr(config.training_args, "condition_dropout")

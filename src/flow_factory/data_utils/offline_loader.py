@@ -22,6 +22,7 @@ from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
 
 from .offline_dataset import OfflineCollator, OfflineDataset
 from .sampler import OfflineConditionSampler
+from .sft_conditions import SFTConditionSource
 
 OfflineDatasetCollection = Union[OfflineDataset, Sequence[OfflineDataset]]
 
@@ -108,7 +109,7 @@ def build_offline_dataloader(
     concatenated = ConcatDataset(offline_datasets)
     sampler_type = (
         OfflineConditionSampler
-        if any(ds.sft_conditions is not None for ds in offline_datasets)
+        if any(isinstance(ds.condition_source, SFTConditionSource) for ds in offline_datasets)
         else DistributedSampler
     )
     sampler = sampler_type(

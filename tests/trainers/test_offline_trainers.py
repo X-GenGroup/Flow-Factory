@@ -667,3 +667,17 @@ def test_sft_dropout_execution_identity_preserves_old_cached_zero(monkeypatch):
     assert enabled["sft_condition_policy_revision"] == CAPTION_DROPOUT.revision
     trainer.config.data_args.enable_preprocess = False
     assert trainer.runtime_execution_identity_payload() != enabled
+
+
+def test_dpo_on_demand_condition_identity_preserves_cached_checkpoints(monkeypatch):
+    trainer = object.__new__(OfflineDPOTrainer)
+    trainer.config = SimpleNamespace(data_args=SimpleNamespace(enable_preprocess=True))
+    monkeypatch.setattr(
+        BaseTrainer, "runtime_execution_identity_payload", lambda self: {"training": {"beta": 3.0}}
+    )
+    assert trainer.runtime_execution_identity_payload() == {"training": {"beta": 3.0}}
+    trainer.config.data_args.enable_preprocess = False
+    assert trainer.runtime_execution_identity_payload() == {
+        "training": {"beta": 3.0},
+        "preference_condition_input": "on_demand",
+    }

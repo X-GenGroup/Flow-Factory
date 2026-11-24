@@ -1447,6 +1447,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
         (
             "online_optimizer_observations",
             {
+                "klein-offline-dpo-raw-cache-fsdp2",
                 "klein-sft-dropout-raw-cache-fsdp2",
                 "refl-sd35-ddp",
                 "refl-flux-tp-cp",
