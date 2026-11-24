@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from typing import Any, Literal, Mapping, MutableMapping, Optional, Sequence
 
 import torch
@@ -28,11 +29,14 @@ from torch.utils.data import DataLoader
 from ..contracts import (
     BatchCapability,
     InputMediaBinding,
+    InputMediaOrder,
+    InputMediaSpec,
     PipelineIOContract,
     validate_pipeline_model_input,
     validate_pipeline_output_candidate,
 )
 from ..hparams import Arguments
+from ..models.sft_dropout import CaptionDropoutPolicy, SFTConditionDropoutPolicy
 from ..utils.base import filter_kwargs
 from ..utils.dist import data_parallel_geometry
 from .dataset import (
@@ -51,6 +55,7 @@ from .offline_dataset import (
     MediaDecoder,
     OfflineDataset,
     OfflineSupervisionType,
+    compute_offline_condition_id,
     load_offline_manifest,
 )
 from .offline_loader import build_offline_dataloader
@@ -61,6 +66,7 @@ from .schema import (
     NormalizedDatasetRecord,
     PreferenceSupervision,
 )
+from .sft_conditions import SFTConditionSource, absent_caption_records
 
 
 def build_offline_train_dataloader(
@@ -73,6 +79,7 @@ def build_offline_train_dataloader(
     preprocess_kwargs: Optional[Mapping[str, Any]] = None,
     extra_hash_strs: Optional[Sequence[str]] = None,
     media_decoders: Optional[Mapping[MediaType, MediaDecoder]] = None,
+    sft_policy: SFTConditionDropoutPolicy | None = None,
     shuffle: bool = True,
     sampler_drop_last: bool = False,
     batch_drop_last: bool = False,
@@ -96,6 +103,7 @@ def build_offline_train_dataloader(
         preprocess_kwargs: Optional overrides layered onto config-derived train
             preprocessing arguments.
         extra_hash_strs: Additional input-cache fingerprint components.
+        sft_policy: Enabled adapter policy for demonstration conditioning.
         media_decoders: Optional module-level target decoders by media type.
         shuffle: Whether the official ``DistributedSampler`` shuffles each epoch.
         sampler_drop_last: Whether the sampler drops its non-divisible rank tail.
@@ -159,7 +167,9 @@ def build_offline_train_dataloader(
             "offline pipeline contract requires per_device_batch_size=1 for "
             f"single-sample execution, received {training_args.per_device_batch_size!r}"
         )
-    if not data_args.enable_preprocess:
+    if not data_args.enable_preprocess and (
+        supervision_type != "demonstration" or getattr(training_args, "trainer_type", None) != "sft"
+    ):
         raise ValueError(
             "offline train data requires data.enable_preprocess=True so cached rows contain "
             "adapter input conditions rather than raw V2 projections"
@@ -168,7 +178,7 @@ def build_offline_train_dataloader(
     _validate_training_sources(training_sources)
 
     normalized_extra_hash_strs = _build_extra_hash_strs(config, extra_hash_strs)
-    normalized_preprocess_kwargs = _build_preprocess_kwargs(
+    normalized_preprocess_kwargs = offline_preprocess_kwargs(
         config,
         preprocess_func,
         preprocess_kwargs,
@@ -215,8 +225,7 @@ def build_offline_train_dataloader(
     offline_datasets = []
     for source, dataset_dir, records in source_records:
         media_digest_cache: MutableMapping[str, str] = {}
-        condition_cache = _build_distributed_condition_cache(
-            records,
+        cache_options = dict(
             source_name=source.name,
             split=source.train.split,
             dataset_dir=dataset_dir,
@@ -231,17 +240,73 @@ def build_offline_train_dataloader(
             accelerator=accelerator,
             _media_digest_cache=media_digest_cache,
         )
-        offline_datasets.append(
-            OfflineDataset(
+        raw = not data_args.enable_preprocess
+        if raw:
+            condition_cache = project_offline_condition_dataset(
                 records,
-                condition_cache,
                 source_name=source.name,
-                source_id=source.source_id,
-                supervision_type=supervision_type,
-                media_decoders=media_decoders,
+                ordered_references=ordered_references,
+                pipeline_io_contract=pipeline_io_contract,
                 _media_digest_cache=media_digest_cache,
             )
+        else:
+            condition_cache = _build_distributed_condition_cache(records, **cache_options)
+        view = None
+        if raw or sft_policy is not None:
+            view = SFTConditionSource(
+                policy=sft_policy,
+                mode=getattr(training_args, "condition_dropout", 0),
+                seed=training_args.seed,
+                raw=raw,
+                dataset_dir=dataset_dir,
+                ordered=ordered_references,
+            )
+            if not raw and isinstance(sft_policy, CaptionDropoutPolicy):
+                alternatives, indices = absent_caption_records(
+                    records,
+                    sft_policy.empty_prompt,
+                    share_across_references=sft_policy.share_across_references,
+                )
+                if sft_policy.share_across_references:
+                    # Only the deterministic text-owned columns overlay each positive row.
+                    cache_options["pipeline_io_contract"] = replace(
+                        pipeline_io_contract,
+                        input_media=InputMediaSpec(
+                            (), InputMediaBinding.GROUPED_BY_TYPE, InputMediaOrder.INSENSITIVE
+                        ),
+                    )
+                cache_options["extra_hash_strs"] = [
+                    *cache_options["extra_hash_strs"],
+                    sft_policy.revision,
+                ]
+                view.alternatives = _build_distributed_condition_cache(
+                    alternatives, **cache_options
+                )
+                expected_ids = [
+                    compute_offline_condition_id(
+                        record,
+                        index=i,
+                        source_name=source.name,
+                        _media_digest_cache=media_digest_cache,
+                    )
+                    for i, record in enumerate(alternatives)
+                ]
+                if list(view.alternatives[OFFLINE_CONDITION_ID_COLUMN]) != expected_ids:
+                    raise ValueError(
+                        f"SFT absent-condition cache identity mismatch for source {source.name!r}"
+                    )
+                view.indices = tuple(indices)
+        dataset = OfflineDataset(
+            records,
+            condition_cache,
+            source_name=source.name,
+            source_id=source.source_id,
+            supervision_type=supervision_type,
+            media_decoders=media_decoders,
+            _media_digest_cache=media_digest_cache,
+            sft_conditions=view,
         )
+        offline_datasets.append(dataset)
 
     # Ranks of one tensor-parallel group consume the same sample, so the official
     # DistributedSampler must be sized by the data-parallel group, not the world.
@@ -375,15 +440,17 @@ def _build_distributed_condition_cache(
     return condition_cache
 
 
-def _build_preprocess_kwargs(
+def offline_preprocess_kwargs(
     config: Arguments,
     preprocess_func: PreprocessCallable,
     overrides: Optional[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    """Resolve identical adapter input arguments for cached and on-demand preprocessing."""
     data_args = config.data_args
     training_args = config.training_args
     kwargs = filter_kwargs(preprocess_func, **data_args)
     kwargs.update({"is_train": True, **training_args})
+    kwargs.pop("condition_dropout", None)
     kwargs["guidance_scale"] = training_args.get_preprocess_guidance_scale()
     if overrides is not None:
         kwargs.update(overrides)

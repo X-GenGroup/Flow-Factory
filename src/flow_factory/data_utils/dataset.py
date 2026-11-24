@@ -692,145 +692,16 @@ class GeneralDataset(Dataset):
         if self._uses_ordered_references:
             metadata_excluded_columns.update({"references", "reference_manifest"})
 
-        # 1. Prepare prompt inputs (text)
-        prompt = batch["prompt"]
-        negative_prompt = batch.get("negative_prompt", None)
-        prompt_args = {"prompt": prompt}
-        if negative_prompt is not None:
-            prompt_args["negative_prompt"] = negative_prompt
-
-        # 2. Prepare image inputs (only when image_dir exists and batch has images)
-        if "image" in batch:
-            batch["images"] = batch.pop("image")  # Rename for consistency
-
-        image_args = {"images": None}
-        if image_dir is not None and "images" in batch:
-            img_paths_list = batch["images"]
-            batch["images"] = []  # Clear
-            image_args["images"] = []
-            for img_paths in img_paths_list:
-                if not img_paths:
-                    # Empty sample contributes [] to both args and batch so the
-                    # column stays a homogeneous List[List[...]] (MultiImageBatch)
-                    # and HF.map(batched=True) sees matching column lengths.
-                    image_args["images"].append([])
-                    batch["images"].append([])
-                else:
-                    if isinstance(img_paths, str):
-                        img_paths = [img_paths]
-                    images = [
-                        _load_rgb_image(
-                            _resolve_path(image_dir, img_path),
-                            source="grouped input image",
-                        )
-                        for img_path in img_paths
-                    ]
-                    image_args["images"].append(images)
-                    # Persist as PIL (not tensors) so HF stores this column via the
-                    # Image feature. Ragged image tensors (variable size/count, e.g.
-                    # multi-reference I2I) are not Arrow-serializable.
-                    batch["images"].append(images)
-
-        # 3. Prepare video inputs (only when video_dir exists and batch has videos)
-        if "video" in batch:
-            batch["videos"] = batch.pop("video")  # Rename for consistency
-
-        video_args = {"videos": None}
-        if video_dir is not None and "videos" in batch:
-            video_paths_list = batch["videos"]
-            batch["videos"] = []  # Clear
-            video_args["videos"] = []
-            for video_paths in video_paths_list:
-                if not video_paths:
-                    # Empty sample contributes [] to both args and batch so the
-                    # column stays a homogeneous List[List[...]] (MultiVideoBatch)
-                    # and HF.map(batched=True) sees matching column lengths.
-                    video_args["videos"].append([])
-                    batch["videos"].append([])
-                else:
-                    if isinstance(video_paths, str):
-                        video_paths = [video_paths]
-
-                    videos = [
-                        _load_grouped_video(video_dir, video_spec) for video_spec in video_paths
-                    ]
-                    video_pts = [pil_image_to_tensor(video) for video in videos]
-                    video_args["videos"].append(videos)
-                    batch["videos"].append(video_pts)
-
-        # 4. Prepare audio inputs (only when audio_dir exists and batch has audios)
-        if "audio" in batch:
-            batch["audios"] = batch.pop("audio")  # Rename for consistency
-
-        audio_args = {"audios": None}
-        if audio_dir is not None and "audios" in batch:
-            audio_paths_list = batch["audios"]
-            batch["audios"] = []  # Clear
-            audio_args["audios"] = []
-            for audio_paths in audio_paths_list:
-                if not audio_paths:
-                    # Empty sample contributes [] to both args and batch so the
-                    # column stays a homogeneous List[List[Tensor]] (MultiAudioBatch)
-                    # and HF.map(batched=True) sees matching column lengths.
-                    audio_args["audios"].append([])
-                    batch["audios"].append([])
-                else:
-                    if isinstance(audio_paths, str):
-                        audio_paths = [audio_paths]
-                    audios = [
-                        _load_grouped_audio(audio_dir, audio_spec) for audio_spec in audio_paths
-                    ]
-                    # Always store as List[Tensor] (no single-audio unwrap) so
-                    # downstream encode_audio sees a uniform type within the batch.
-                    audio_args["audios"].append(audios)
-                    batch["audios"].append(audios)
-
-        # 5. Load ordered references and retain their canonical reconstruction sidecars.
-        reference_args: Dict[str, Any] = {}
-        if self._uses_ordered_references:
-            raw_references = batch.pop("references")
-            loaded_reference_batch = []
-            canonical_manifests = []
-            for row_offset, references in enumerate(raw_references):
-                row_index = indices[row_offset]
-                manifest = _canonicalize_ordered_reference_value(
-                    references,
-                    row_index=row_index,
-                )
-                canonical_manifests.append(manifest)
-                loaded_reference_batch.append(
-                    [
-                        _load_ordered_reference(
-                            entry,
-                            self.data_root,
-                            row_index=row_index,
-                            reference_index=reference_index,
-                        )
-                        for reference_index, entry in enumerate(json.loads(manifest))
-                    ]
-                )
-            reference_args.update(
-                references=loaded_reference_batch,
-                reference_manifest=canonical_manifests,
-            )
-            batch["reference_manifest"] = canonical_manifests
-
-        slot_args = {
-            column: batch[column]
-            for column in ("image_slots", "video_slots", "audio_slots")
-            if column in batch
-        }
-
-        # 6. Call preprocess function with filtered kwargs
-        input_args = {
-            **prompt_args,
-            **image_args,
-            **video_args,
-            **audio_args,
-            **reference_args,
-            **slot_args,
-            **self._preprocess_kwargs,
-        }
+        input_args = decode_preprocessing_inputs(
+            batch,
+            indices,
+            image_dir=image_dir,
+            video_dir=video_dir,
+            audio_dir=audio_dir,
+            data_root=self.data_root,
+            ordered_references=self._uses_ordered_references,
+        )
+        input_args.update(self._preprocess_kwargs)
         filtered_args = filter_kwargs(self._preprocess_func, **input_args)
         preprocess_res = self._preprocess_func(**filtered_args)
         passthrough_collisions = set(preprocess_res) & set(self._passthrough_columns)
@@ -845,32 +716,7 @@ class GeneralDataset(Dataset):
         # are stored as per-sample List[PIL] so HF serializes them via the Image
         # feature; ragged image tensors (variable size/count, e.g. multi-ref I2I)
         # are not Arrow-serializable.
-        adapter = getattr(self._preprocess_func, "__self__", None)
-        adapter_python_format_cols = getattr(adapter, "python_format_columns", frozenset())
-        final_res = {}
-        for k, v in preprocess_res.items():
-            if k in adapter_python_format_cols:
-                # Image column: canonicalize each per-sample value
-                # (Tensor(N,C,H,W) / List[Tensor] / List[PIL]) to List[PIL].
-                # Empty samples stay []. The per-batch value is a per-sample list
-                # by the column-homogeneity contract.
-                if not isinstance(v, list):
-                    raise TypeError(
-                        f"image column {k!r} must be a per-sample list for HF "
-                        f"Image serialization, got {type(v).__name__}"
-                    )
-                final_res[k] = [_to_pil_image_list(per_sample) for per_sample in v]
-            elif isinstance(v, torch.Tensor):
-                # Case A: Dense Batch Tensor
-                # Move entire batch to CPU first (faster than moving slices), then unbind
-                final_res[k] = list(torch.unbind(v.cpu(), dim=0))
-            elif isinstance(v, list):
-                # Case B: Ragged List (e.g. Flux image latents of varying sizes,
-                # or nested lists like List[List[Tensor]] for multi-ref condition images)
-                final_res[k] = [_move_to_cpu(x) for x in v]
-            else:
-                # Case C: Other types (None, int, etc)
-                final_res[k] = v
+        final_res = format_preprocessed_columns(self._preprocess_func, preprocess_res)
 
         # 8. Prepare final results
         batch_dict = {**batch, **final_res}
@@ -1317,6 +1163,178 @@ def _iter_torch_generators(
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _iter_torch_generators(item, _seen)
+
+
+def decode_preprocessing_inputs(
+    batch: dict, indices, *, image_dir, video_dir, audio_dir, data_root, ordered_references: bool
+) -> dict:
+    """Load one projected batch of condition media and preserve its cache presentation."""
+    # 1. Prepare prompt inputs (text)
+    prompt = batch["prompt"]
+    negative_prompt = batch.get("negative_prompt", None)
+    prompt_args = {"prompt": prompt}
+    if negative_prompt is not None:
+        prompt_args["negative_prompt"] = negative_prompt
+
+    # 2. Prepare image inputs (only when image_dir exists and batch has images)
+    if "image" in batch:
+        batch["images"] = batch.pop("image")  # Rename for consistency
+
+    image_args = {"images": None}
+    if image_dir is not None and "images" in batch:
+        img_paths_list = batch["images"]
+        batch["images"] = []  # Clear
+        image_args["images"] = []
+        for img_paths in img_paths_list:
+            if not img_paths:
+                # Empty sample contributes [] to both args and batch so the
+                # column stays a homogeneous List[List[...]] (MultiImageBatch)
+                # and HF.map(batched=True) sees matching column lengths.
+                image_args["images"].append([])
+                batch["images"].append([])
+            else:
+                if isinstance(img_paths, str):
+                    img_paths = [img_paths]
+                images = [
+                    _load_rgb_image(
+                        _resolve_path(image_dir, img_path),
+                        source="grouped input image",
+                    )
+                    for img_path in img_paths
+                ]
+                image_args["images"].append(images)
+                # Persist as PIL (not tensors) so HF stores this column via the
+                # Image feature. Ragged image tensors (variable size/count, e.g.
+                # multi-reference I2I) are not Arrow-serializable.
+                batch["images"].append(images)
+
+    # 3. Prepare video inputs (only when video_dir exists and batch has videos)
+    if "video" in batch:
+        batch["videos"] = batch.pop("video")  # Rename for consistency
+
+    video_args = {"videos": None}
+    if video_dir is not None and "videos" in batch:
+        video_paths_list = batch["videos"]
+        batch["videos"] = []  # Clear
+        video_args["videos"] = []
+        for video_paths in video_paths_list:
+            if not video_paths:
+                # Empty sample contributes [] to both args and batch so the
+                # column stays a homogeneous List[List[...]] (MultiVideoBatch)
+                # and HF.map(batched=True) sees matching column lengths.
+                video_args["videos"].append([])
+                batch["videos"].append([])
+            else:
+                if isinstance(video_paths, str):
+                    video_paths = [video_paths]
+
+                videos = [_load_grouped_video(video_dir, video_spec) for video_spec in video_paths]
+                video_pts = [pil_image_to_tensor(video) for video in videos]
+                video_args["videos"].append(videos)
+                batch["videos"].append(video_pts)
+
+    # 4. Prepare audio inputs (only when audio_dir exists and batch has audios)
+    if "audio" in batch:
+        batch["audios"] = batch.pop("audio")  # Rename for consistency
+
+    audio_args = {"audios": None}
+    if audio_dir is not None and "audios" in batch:
+        audio_paths_list = batch["audios"]
+        batch["audios"] = []  # Clear
+        audio_args["audios"] = []
+        for audio_paths in audio_paths_list:
+            if not audio_paths:
+                # Empty sample contributes [] to both args and batch so the
+                # column stays a homogeneous List[List[Tensor]] (MultiAudioBatch)
+                # and HF.map(batched=True) sees matching column lengths.
+                audio_args["audios"].append([])
+                batch["audios"].append([])
+            else:
+                if isinstance(audio_paths, str):
+                    audio_paths = [audio_paths]
+                audios = [_load_grouped_audio(audio_dir, audio_spec) for audio_spec in audio_paths]
+                # Always store as List[Tensor] (no single-audio unwrap) so
+                # downstream encode_audio sees a uniform type within the batch.
+                audio_args["audios"].append(audios)
+                batch["audios"].append(audios)
+
+    # 5. Load ordered references and retain their canonical reconstruction sidecars.
+    reference_args: Dict[str, Any] = {}
+    if ordered_references:
+        raw_references = batch.pop("references")
+        loaded_reference_batch = []
+        canonical_manifests = []
+        for row_offset, references in enumerate(raw_references):
+            row_index = indices[row_offset]
+            manifest = _canonicalize_ordered_reference_value(
+                references,
+                row_index=row_index,
+            )
+            canonical_manifests.append(manifest)
+            loaded_reference_batch.append(
+                [
+                    _load_ordered_reference(
+                        entry,
+                        data_root,
+                        row_index=row_index,
+                        reference_index=reference_index,
+                    )
+                    for reference_index, entry in enumerate(json.loads(manifest))
+                ]
+            )
+        reference_args.update(
+            references=loaded_reference_batch,
+            reference_manifest=canonical_manifests,
+        )
+        batch["reference_manifest"] = canonical_manifests
+
+    slot_args = {
+        column: batch[column]
+        for column in ("image_slots", "video_slots", "audio_slots")
+        if column in batch
+    }
+
+    # 6. Call preprocess function with filtered kwargs
+    return {
+        **prompt_args,
+        **image_args,
+        **video_args,
+        **audio_args,
+        **reference_args,
+        **slot_args,
+    }
+
+
+def format_preprocessed_columns(preprocess_func, preprocess_res: dict) -> dict:
+    """Canonicalize adapter outputs for per-record storage and collation."""
+    adapter = getattr(preprocess_func, "__self__", None)
+    adapter_python_format_cols = getattr(adapter, "python_format_columns", frozenset())
+    final_res = {}
+    for k, v in preprocess_res.items():
+        if k in adapter_python_format_cols:
+            # Image column: canonicalize each per-sample value
+            # (Tensor(N,C,H,W) / List[Tensor] / List[PIL]) to List[PIL].
+            # Empty samples stay []. The per-batch value is a per-sample list
+            # by the column-homogeneity contract.
+            if not isinstance(v, list):
+                raise TypeError(
+                    f"image column {k!r} must be a per-sample list for HF "
+                    f"Image serialization, got {type(v).__name__}"
+                )
+            final_res[k] = [_to_pil_image_list(per_sample) for per_sample in v]
+        elif isinstance(v, torch.Tensor):
+            # Case A: Dense Batch Tensor
+            # Move entire batch to CPU first (faster than moving slices), then unbind
+            final_res[k] = list(torch.unbind(v.cpu(), dim=0))
+        elif isinstance(v, list):
+            # Case B: Ragged List (e.g. Flux image latents of varying sizes,
+            # or nested lists like List[List[Tensor]] for multi-ref condition images)
+            final_res[k] = [_move_to_cpu(x) for x in v]
+        else:
+            # Case C: Other types (None, int, etc)
+            final_res[k] = v
+
+    return final_res
 
 
 def _supports_ordered_references(preprocess_func: Optional[Callable]) -> bool:

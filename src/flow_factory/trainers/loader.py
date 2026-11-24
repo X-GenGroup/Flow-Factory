@@ -297,6 +297,14 @@ def load_trainer(config: Arguments) -> BaseTrainer:
     # all-reduce with backward; adapters that leave trainable params ungraded in
     # some iterations (e.g. Qwen-Image) opt in via ddp_find_unused_parameters.
     adapter_cls = get_model_adapter_class(config.model_args.model_type)
+    if trainer_type == "sft":
+        from ..models.sft_dropout import resolve_sft_dropout
+
+        resolve_sft_dropout(
+            adapter_cls,
+            config.model_args.model_name_or_path,
+            config.training_args.condition_dropout,
+        )
     resolve_compute_precision_policy(adapter_cls, config)
     validate_context_parallel_config(config, adapter_cls, trainer_cls)
     if uses_execution_kernel:

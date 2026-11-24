@@ -24,7 +24,13 @@ from torch.utils.data import DataLoader
 
 from ...contracts import OFFLINE_EXECUTION_CONTRACT
 from ...data_utils.offline_dataset import DemonstrationOutputBatch, OfflineBatch
-from ...data_utils.offline_train_data import build_offline_train_dataloader
+from ...data_utils.offline_train_data import (
+    build_offline_train_dataloader,
+    offline_preprocess_kwargs,
+)
+from ...data_utils.sft_conditions import encode_raw_sft_conditions
+from ...models.sft_dropout import resolve_sft_dropout
+from ...utils.dist import data_parallel_geometry
 from ..abc import BaseTrainer
 from ..common.context_parallel import (
     ContextParallelTrainingCapability,
@@ -56,11 +62,20 @@ class SFTTrainer(BaseTrainer):
 
     def _build_train_dataloader(self) -> Tuple[DataLoader, Dict[str, DataLoader]]:
         """Build the finite loader owned by its official distributed sampler."""
+        mode = self.config.training_args.condition_dropout
+        self.sft_policy = resolve_sft_dropout(
+            type(self.adapter), self.config.model_args.model_name_or_path, mode
+        )
+        if not self.config.data_args.enable_preprocess:
+            self.raw_condition_kwargs = offline_preprocess_kwargs(
+                self.config, self.adapter.preprocess_func, None
+            )
         dataloader = build_offline_train_dataloader(
             config=self.config,
             accelerator=self.accelerator,
             preprocess_func=self.adapter.preprocess_func,
             supervision_type="demonstration",
+            sft_policy=self.sft_policy,
             pipeline_io_contract=self.adapter.effective_pipeline_io_contract,
         )
         return dataloader, {}
@@ -76,7 +91,18 @@ class SFTTrainer(BaseTrainer):
             batch: One exact :class:`OfflineBatch` with demonstration output.
         """
         output = self._require_demonstration_batch(batch)
-        condition = move_condition_to_device(batch.condition, self.accelerator.device)
+        condition = dict(batch.condition)
+        masks = condition.pop("_sft_mask", None)
+        if "_sft_raw" in condition:
+            with torch.no_grad():
+                condition = encode_raw_sft_conditions(
+                    condition.pop("_sft_raw"),
+                    self.adapter.preprocess_func,
+                    self.raw_condition_kwargs,
+                )
+        condition = move_condition_to_device(condition, self.accelerator.device)
+        if masks is not None and not self.sft_policy.cached_empty_caption:
+            condition["sft_condition_masks"] = masks
 
         # Evaluation leaves trainable components in eval mode. Every finite-data
         # microstep explicitly restores training mode before policy execution.
@@ -139,10 +165,52 @@ class SFTTrainer(BaseTrainer):
 
             # Only a completed backward enters the persistent accumulation window.
             loss_info = self._get_loss_info()
+            if masks is not None:
+                self._record_condition_metrics(loss_info, batch, masks, loss)
             loss_info["loss"].append(loss.detach())
             loss_info["flow_matching_loss"].append(per_sample_loss.mean().detach())
             if self.accelerator.sync_gradients:
                 self._loss_info = self._apply_optimizer_step(loss_info)
+
+    def _record_condition_metrics(self, metrics, batch, masks, loss):
+        # Record one observation per sampled record across the whole optimizer window;
+        # padded tail entries are counted on each actual traversal.
+        counts = getattr(self, "_sft_counts", None)
+        if counts is None:
+            self._sft_counts = counts = defaultdict(int)
+        for model_input, mask in zip(batch.model_inputs, masks, strict=True):
+            task = "reference" if model_input.media else "prompt"
+            counts[task, "records"] += 1
+            counts[task, "eligible"] += bool(
+                model_input.prompt
+                or (model_input.media and not self.sft_policy.cached_empty_caption)
+            )
+            counts[task, "dropped"] += bool(mask)
+            for segment in mask:
+                counts[task, segment.partition(":")[0]] += 1
+        if self.accelerator.sync_gradients:
+            replicas, _ = data_parallel_geometry(self.accelerator)
+            # The shared metrics reducer averages replicas. This multiplier yields a
+            # sum over the DP group and excludes copies on TP/CP peers.
+            for task in ("prompt", "reference"):
+                for key in ("records", "eligible", "dropped", "text", "images", "vit", "vae"):
+                    metrics[f"condition_dropout/{task}/{key}"].append(
+                        loss.new_tensor(counts[task, key] * replicas)
+                    )
+            counts.clear()
+
+    def runtime_execution_identity_payload(self) -> Dict[str, Any]:
+        """Keep old cached p=0 checkpoints readable and lock the realized condition path."""
+        identity = super().runtime_execution_identity_payload()
+        if identity["training"].get("condition_dropout", 0) == 0:
+            identity["training"].pop("condition_dropout", None)
+        else:
+            identity["sft_condition_policy_revision"] = (
+                self.adapter.sft_condition_dropout_policy.revision
+            )
+        if not self.config.data_args.enable_preprocess:
+            identity["sft_condition_input"] = "on_demand"
+        return identity
 
     def _get_loss_info(self) -> Dict[str, List[torch.Tensor]]:
         """Return the metric window, including for lightweight test instances."""

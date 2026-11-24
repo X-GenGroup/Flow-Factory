@@ -68,7 +68,7 @@ from ..parallelism.context import (
     ContextParallelLayout,
 )
 from ..pipeline_contracts import image_output_contract
-from ..sft_dropout import CAPTION_DROPOUT
+from ..sft_dropout import SEPARABLE_CAPTION_DROPOUT
 from ._output import encode_flux1_vae_image, prepare_flux1_output_latents
 from .flux1 import Flux1Adapter
 
@@ -146,7 +146,7 @@ class FluxKontextContextParallelLayout(ContextParallelLayout):
 class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
     """Concrete implementation for Flow Matching models (FLUX.1 Kontext)."""
 
-    sft_condition_dropout_policy = CAPTION_DROPOUT
+    sft_condition_dropout_policy = SEPARABLE_CAPTION_DROPOUT
     differentiable_decode_fields = ("image",)
 
     supports_sharded_target_materialization = True
@@ -353,6 +353,20 @@ class Flux1KontextAdapter(ConfiguredImageOutputAdapterMixin, BaseAdapter):
         )
 
         return images
+
+    def preprocess_func(self, prompt=None, images=None, **kwargs):
+        """Choose automatic edit geometry per record, independent of its cache map batch."""
+        if images is None or len(images) < 2 or kwargs.get("condition_image_size") is not None:
+            return super().preprocess_func(prompt=prompt, images=images, **kwargs)
+        references = self._standardize_image_input(images, output_type="pil")
+        if len({image.size for image in references}) == 1:
+            return super().preprocess_func(prompt=prompt, images=images, **kwargs)
+
+        result = super().preprocess_func(prompt=prompt, **kwargs)
+        rows = [self.encode_image([image]) for image in references]
+        for key in rows[0]:
+            result[key] = [row[key][0] for row in rows]
+        return result
 
     def encode_image(
         self,

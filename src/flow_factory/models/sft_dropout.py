@@ -44,6 +44,7 @@ class CaptionDropoutPolicy:
 
     empty_prompt: str = ""
     revision: str = "empty-caption-v1"
+    share_across_references: bool = False
     supports_native = False
     cached_empty_caption = True
 
@@ -61,6 +62,8 @@ class CaptionDropoutPolicy:
 
 
 CAPTION_DROPOUT = CaptionDropoutPolicy()
+# Request this policy only when the same preprocessor can encode text on its own.
+SEPARABLE_CAPTION_DROPOUT = CaptionDropoutPolicy(share_across_references=True)
 
 
 def record_draw(seed: int, epoch: int, record_id: str) -> Callable[[str], float]:
@@ -74,7 +77,10 @@ def record_draw(seed: int, epoch: int, record_id: str) -> Callable[[str], float]
     return draw
 
 
-def resolve_sft_dropout(adapter_cls: type, checkpoint: str, mode: float | str):
+def resolve_sft_dropout(
+    adapter_cls: type, checkpoint: str, mode: float | str
+) -> SFTConditionDropoutPolicy | None:
+    """Admit an enabled policy before constructing the accelerator or loading any weights."""
     if mode == 0:
         return None
     policy = getattr(adapter_cls, "sft_condition_dropout_policy", None)

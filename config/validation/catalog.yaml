@@ -18759,3 +18759,180 @@ cases:
       OMP_NUM_THREADS: '1'
       CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
+- id: sft-condition-source-contracts
+  covers:
+  - sft.dropout.core_contracts
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/data_utils/sft_conditions.py
+  - src/flow_factory/trainers/offline/sft.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/data_utils/test_offline_train_data.py
+  - tests/data_utils/test_sft_condition_format.py
+  - tests/hparams/test_offline_training_args.py
+  - tests/trainers/test_offline_trainers.py
+  - tests/models/test_sft_dropout_registry.py
+  - tests/models/test_sft_reference_geometry.py
+  - tests/distributed/test_packed_sft_condition_sources.py
+  fixture: Check raw/cached and packed alternatives, real registry admission and SFT/paired objective
+    controls plus seed, Arrow shape and serialization.
+  fixture_kind: model_structure
+  qa: Q0
+  backend: cpu
+  topology:
+    nodes: 1
+    ranks_per_node: 1
+    dp_replicate: 1
+    dp_shard: 1
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: assertions
+    description: Check raw/cached and packed alternatives, real registry admission and SFT/paired objective
+      controls plus seed, Arrow shape and serialization.
+    reward: none
+  artifacts:
+  - tests/data_utils/test_offline_train_data.py
+  - tests/data_utils/test_sft_condition_format.py
+  - tests/hparams/test_offline_training_args.py
+  - tests/trainers/test_offline_trainers.py
+  - tests/models/test_sft_dropout_registry.py
+  - tests/models/test_sft_reference_geometry.py
+  - tests/distributed/test_packed_sft_condition_sources.py
+  - tests/distributed/bagel_cp_fixture.py
+  - tests/distributed/sensenova_cp_fixture.py
+  - tests/distributed/test_bagel_parallel.py
+  cost_seconds: 25
+  resources:
+    gpus: 0
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    - datasets
+    - flash_attn
+    environment:
+      OMP_NUM_THREADS: '1'
+      CUDA_VISIBLE_DEVICES: '-1'
+    model_paths: []
+- id: klein-sft-dropout-raw-cache-fsdp2
+  covers:
+  - sft.dropout.klein_fsdp2
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/data_utils/sft_conditions.py
+  - src/flow_factory/trainers/offline/sft.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_sft_dropout_fsdp2.py
+  fixture: Compare raw and cached Flux Klein edit objectives, gradients and updates on two FSDP2 ranks.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  topology:
+    nodes: 1
+    ranks_per_node: 2
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 1
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Compare raw and cached Flux Klein edit objectives, gradients and updates on two FSDP2
+      ranks.
+    reward: none
+  artifacts:
+  - tests/distributed/test_sft_dropout_fsdp2.py
+  - tests/distributed/conftest.py
+  - tests/distributed/flux2_cp_fixture.py
+  - tests/distributed/online_optimizer_observations.py
+  - tests/distributed/test_context_parallel_state.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/attention_precision_reference.py
+  - tests/distributed/test_model_preparation.py
+  cost_seconds: 120
+  resources:
+    gpus: 2
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    - datasets
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []
+- id: wan-sft-dropout-dp2-cp2-continuation
+  covers:
+  - sft.dropout.wan_continuation
+  facets:
+  - model_adapter
+  owners:
+  - src/flow_factory/data_utils/sft_conditions.py
+  - src/flow_factory/trainers/offline/sft.py
+  command:
+  - python3
+  - -m
+  - pytest
+  - -q
+  - -s
+  - tests/distributed/test_sft_dropout_continuation.py
+  fixture: Compare resumed vs uninterrupted loss, gradients and parameters, DP-specific decisions, CP
+    peer agreement and finite sampler epochs.
+  fixture_kind: model_structure
+  qa: Q2
+  backend: fsdp2
+  execution_scope: runtime
+  execution_capability: wan-sft-ulysses-bf16-v1
+  topology:
+    nodes: 1
+    ranks_per_node: 4
+    dp_replicate: 1
+    dp_shard: 2
+    tp: 1
+    cp: 2
+    ep: 1
+  oracle:
+    kind: numerical
+    description: Compare resumed vs uninterrupted loss, gradients and parameters, DP-specific decisions,
+      CP peer agreement and finite sampler epochs.
+    reward: none
+  artifacts:
+  - tests/distributed/test_sft_dropout_continuation.py
+  - tests/distributed/conftest.py
+  - tests/distributed/wan_sft_fixture.py
+  - tests/distributed/test_model_preparation.py
+  - tests/distributed/test_context_parallel_training.py
+  - tests/distributed/attention_precision_reference.py
+  cost_seconds: 120
+  resources:
+    gpus: 4
+    packages:
+    - torch
+    - pytest
+    - diffusers
+    - transformers
+    - accelerate
+    - peft
+    - datasets
+    environment:
+      OMP_NUM_THREADS: '1'
+    model_paths: []

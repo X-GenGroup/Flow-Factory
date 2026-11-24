@@ -267,3 +267,38 @@ def test_wan22_ti2v5b_sft_example_parses(monkeypatch: pytest.MonkeyPatch) -> Non
     assert config.log_args.save_freq == 1
     assert config.log_args.save_model_only is False
     assert config.eval_args.eval_freq == 0
+
+
+@pytest.mark.parametrize(
+    "value", [True, False, -0.001, 1.001, float("nan"), float("inf"), "0.1", "auto", None]
+)
+def test_sft_rejects_ambiguous_dropout_modes(value):
+    with pytest.raises(ValueError, match="train.condition_dropout"):
+        SFTTrainingArguments(condition_dropout=value)
+
+
+def test_sft_dropout_yaml_and_default():
+    assert _offline_config("sft").training_args.condition_dropout == 0.1
+    for mode in (0, 0.25, 1, "native"):
+        assert (
+            _offline_config("sft", condition_dropout=mode).training_args.condition_dropout == mode
+        )
+
+
+@pytest.mark.parametrize("trainer_type", ["sft", "offline-dpo"])
+def test_only_sft_admits_raw_offline_conditions(trainer_type):
+    options = {
+        "train": {"trainer_type": trainer_type},
+        "data": {
+            "datasets": [{"name": "demo", "dataset_dir": "fixture", "train": {"weight": 1}}],
+            "enable_preprocess": False,
+        },
+    }
+    if trainer_type == "sft":
+        options["train"]["condition_dropout"] = 0
+        config = Arguments.from_dict(options)
+        assert config.data_args.enable_preprocess is False
+        assert config.training_args.condition_dropout == 0
+    else:
+        with pytest.raises(ValueError, match="data.enable_preprocess=True"):
+            Arguments.from_dict(options)

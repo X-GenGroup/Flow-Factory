@@ -222,6 +222,7 @@ class OfflineDataset(Dataset):
         supervision_type: OfflineSupervisionType,
         media_decoders: Mapping[MediaType, MediaDecoder] | None = None,
         _media_digest_cache: MutableMapping[str, str] | None = None,
+        sft_conditions=None,
     ) -> None:
         _validate_supervision_type(supervision_type)
         if not isinstance(source_name, str) or not source_name.strip():
@@ -294,6 +295,7 @@ class OfflineDataset(Dataset):
             condition_ids.append(condition_id)
             record_ids.append(record_id)
 
+        self.sft_conditions = sft_conditions
         self._records = normalized_records
         self._condition_cache = stable_condition_cache
         self._condition_cache_length = len(stable_condition_cache)
@@ -328,6 +330,9 @@ class OfflineDataset(Dataset):
             index=index,
             mismatch_error=RuntimeError,
         )
+
+        if self.sft_conditions is not None:
+            condition = self.sft_conditions.select(index, record.model_input, record_id, condition)
 
         supervision = record.supervision
         if self.supervision_type == "demonstration":

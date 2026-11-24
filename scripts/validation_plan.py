@@ -426,10 +426,12 @@ def refine_routing(
             if matches(path, rule["paths"])
             for name in rule["symbols"]
             if name.startswith(("<import:", "<appended-tests:"))
-            or name.endswith(":sft-mask-argument")
         }
         semantic[path] = validation_changes.semantic_changes(
             path, *pair, bindings, eligible_symbols=eligible_symbols
+        )
+        semantic[path] = validation_changes.reviewed_change_symbols(
+            semantic[path], *pair, policy.get("reviewed_transitions", {}).get(path)
         )
         if not semantic[path] and pair[1] is not None:
             imports.append(path)
@@ -464,6 +466,14 @@ def refine_routing(
     active = [
         path for path in scope["paths"] if path not in imports + bridges and path not in moves
     ]
+    # A reviewed declaration with no remaining behavioral edits creates no facet interaction.
+    for path, transition in policy.get("reviewed_transitions", {}).items():
+        if (
+            transition.get("declaration_only")
+            and path in active
+            and semantic.get(path) == [transition["marker"]]
+        ):
+            active.remove(path)
     scope["routing_paths"] = active
     routed = agent_scope.classify_changes(
         active,

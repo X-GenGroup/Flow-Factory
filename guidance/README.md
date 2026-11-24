@@ -8,6 +8,7 @@ checks that the model, algorithm and resource layout can work together.
 | [Feature overview](overview.md) | Choose models, paradigms, algorithms, tuning and backend responsibilities |
 | [Installation](installation.md) · [Loading and resume](configuration/loading-and-resume.md) | Choose a compatible environment and migrate checkpoints |
 | [Training workflow](training/workflow.md) | Follow data preparation, generation, feedback and optimization |
+| [SFT condition dropout](training/sft-conditioning.md) | Choose a probability or model recipe and check which references are preserved |
 | [Algorithms](training/algorithms.md) | Choose online learning, offline training or distillation |
 | [Datasets](training/datasets.md) · [Rewards](training/rewards.md) | Configure training inputs and feedback |
 | [Parallel quickstart](parallelism/quickstart.md) | Generate and launch complete 4/4/8-GPU SD3.5 SFT configurations |

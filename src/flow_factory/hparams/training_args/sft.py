@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import ClassVar, Literal
 
@@ -34,9 +35,23 @@ class SFTTrainingArguments(OfflineFlowMatchingTrainingArguments):
         metadata={"help": "Select the offline supervised fine-tuning trainer."},
     )
 
+    condition_dropout: float | Literal["native"] = field(
+        default=0.1,
+        metadata={
+            "help": "Chance to omit eligible conditioning per example, or 'native' for a published recipe."
+        },
+    )
+
     def __post_init__(self) -> None:
         """Validate the fixed SFT trainer identity."""
         super().__post_init__()
+        mode = self.condition_dropout
+        if mode != "native":
+            if type(mode) not in (int, float) or not math.isfinite(mode) or not 0 <= mode <= 1:
+                raise ValueError(
+                    f"train.condition_dropout must be in [0, 1] or 'native', got {mode!r}"
+                )
+            self.condition_dropout = float(mode)
         if self.trainer_type != "sft":
             raise ValueError(
                 "SFTTrainingArguments requires train.trainer_type='sft', "

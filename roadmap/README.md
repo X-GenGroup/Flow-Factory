@@ -17,7 +17,7 @@ and evidence are recorded in the [ART guide](../guidance/training/art.md).
 [DRTune](milestones/v0.5x-v0.6.md#p22) merged in #391–#393, bringing the registry to 18 trainers.
 [v0.6.0 is published](https://github.com/X-GenGroup/Flow-Factory/releases/tag/v0.6.0).
 The [release notes](../docs/release/v0.6-notes.md) record compatibility and artifacts.
-[P23 SFT conditioning dropout](milestones/v0.6x-sft.md#p23) is the next feature for v0.6.x.
+[P23 SFT conditioning dropout](milestones/v0.6x-sft.md#p23) implements the v0.6.x training feature. See the [user guide](../guidance/training/sft-conditioning.md) for the 19 built-in adapters.
 P15b–P15f follow it for NCCL EP in v0.7. P16 targets optional DeepEP in v0.8. P17 remains the
 v1.0 stabilization boundary.
 

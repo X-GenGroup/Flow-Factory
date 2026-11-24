@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 from typing import Iterator, List, Optional, Sized, cast
 
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset, DistributedSampler, Sampler
 
 from .sampling_plan import SampleAssignment, SamplingPlan, build_sampling_plan
 
@@ -176,3 +176,13 @@ __all__ = [
     "RankLocalSampler",
     "SubgroupTiledSampler",
 ]
+
+
+class OfflineConditionSampler(DistributedSampler):
+    """Propagate the finite sampler epoch before DataLoader workers start fetching rows."""
+
+    def set_epoch(self, epoch: int) -> None:
+        super().set_epoch(epoch)
+        for source in self.dataset.datasets:
+            if source.sft_conditions is not None:
+                source.sft_conditions.epoch = epoch

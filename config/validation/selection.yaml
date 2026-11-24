@@ -10,6 +10,14 @@ static_paths:
   - assets/**
 owners:
   - paths:
+    - src/flow_factory/models/sft_dropout.py
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: Cache sharing and selection must agree with encoder ownership and the live finite sampler.
+  - paths:
+    - src/flow_factory/data_utils/sft_conditions.py
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: SFT record selection, raw encoding and cache overlays must preserve finite identity, default shape and continuation.
+  - paths:
     - src/flow_factory/models/sft_recipes.py
     requires: ['sft.dropout.packed_contracts', 'sft.dropout.bagel', 'sft.dropout.sensenova']
     reason: Native conditional and numeric segment probabilities drive the distributed packed consumers.
@@ -1484,7 +1492,156 @@ interactions:
     requires: [checkpoint.roundtrip]
     reason: Persistent state changes need state round-trip evidence even inside one algorithm.
 
+# Exact before/after file blobs bind exceptional behavioral partitions to their reviewed code.
+# A later edit restores ordinary owner routing for the entire changed implementation.
+reviewed_transitions:
+  src/flow_factory/models/bagel/bagel.py:
+    symbols: ['BagelAdapter.forward']
+    marker: 'BagelAdapter.forward:sft-mask-argument'
+    before_sha256: 7684203b9468bef4a9ca4b1e4c83afeaf7adbb5d1262468b5b5aa45b6425d6ef
+    after_sha256: c3950d3b69daa4b7d246ec68f23b12661a43965e6be0d4e74a183d77acb9f958
+  src/flow_factory/models/sensenova/sensenova.py:
+    symbols: ['SenseNovaAdapter.forward']
+    marker: 'SenseNovaAdapter.forward:sft-mask-argument'
+    before_sha256: 5f4d9f4497f8c866c0bda7656f683f41fbd81b2e96c93708e1431155a0de6075
+    after_sha256: 38ea1d4d6bc3ba1f7c0ef6a5eeb1e99d47e1e26f2fd4b920e1a4f1403e406347
+  src/flow_factory/models/flux/flux3.py:
+    symbols: ['<module>', 'Flux3Adapter.sft_condition_dropout_policy']
+    marker: '<separable-caption-import>'
+    before_sha256: 7acaffd0a1123b61a20abe797401cce903a4d9a9fca32768b1bcd10c943cf0d7
+    after_sha256: 119e4616f883d47bd4a77b3579dbfb9a10242af2c6253fb647ce3180d014d49b
+  src/flow_factory/models/flux/flux2.py:
+    symbols: ['<module>', 'Flux2Adapter.sft_condition_dropout_policy']
+    marker: '<separable-caption-import>'
+    before_sha256: e15e7769b9b8d0cd683c5e2567a836ebd66df2c2116f9e81c9212c1a97c9455f
+    after_sha256: e2c1f2b75c931e15fd05d23a91d65cd02fe0f7e85053ca39c1fab5c139054ae3
+  src/flow_factory/models/flux/flux2_klein.py:
+    symbols: ['<module>', 'Flux2KleinAdapter.sft_condition_dropout_policy']
+    marker: '<separable-caption-import>'
+    before_sha256: 1a054f23ee5e9fbdccc2ae374f9701b4ecfbcf3bf11b1d7cfac65877930c018f
+    after_sha256: 7ef1a0a88ed2093defdf55013f27f37673e7fc27c43198b3a31731996cea5eec
+  src/flow_factory/models/flux/flux1_kontext.py:
+    symbols: ['<module>', 'Flux1KontextAdapter.sft_condition_dropout_policy']
+    marker: '<separable-caption-import>'
+    before_sha256: 8d1dbe5a0fd9bad7819b8aca5d7a24619e358f16d40051be75ae74cfc44a4a01
+    after_sha256: 4251981c965cb30047903354cb4a33e313f76e45e3b50a236c3f67d53a2db8a9
+  src/flow_factory/models/wan/wan2_i2v.py:
+    symbols: ['<module>', 'Wan2_I2V_Adapter.sft_condition_dropout_policy']
+    marker: '<separable-caption-import>'
+    before_sha256: 7a48d765ef92dbe8cccc05249127113d43de2b1356f1f595409df74d8d1bda37
+    after_sha256: be8da55b473cfa88e1fbdf795552d60032157a4d5f01fd2421eed74e845447da
+  src/flow_factory/models/ltx2/ltx2_i2av.py:
+    symbols: ['<module>', 'LTX2_I2AV_Adapter.sft_condition_dropout_policy']
+    marker: '<separable-caption-import>'
+    before_sha256: 3b9516afcdbb72f4f13cca5095fbfd94f2e0362b6ff016ae45486d7e63b23e5d
+    after_sha256: d6e406a7eb0d94c8d6c39f73e1c4069a1480aa5558890654008075c2d5b18ded
+  src/flow_factory/models/sft_dropout.py:
+    symbols: ['<module>']
+    marker: '<separable-caption-policy>'
+    before_sha256: 1b13ebc8a435582126acd19561a9dc33cef9f27832d232ebc19cf67331cb6d15
+    after_sha256: 34a87de89b4d78cca63a6fdf10b97059dbb70a4d2c3c22261b721b7eeeb7c40e
+  src/flow_factory/models/abc.py:
+    symbols: ['<module>', 'BaseAdapter.sft_condition_dropout_policy']
+    marker: '<nullable-sft-capability>'
+    before_sha256: 3e318fc1d0120e6de4615f2d450f3bebfe2f178d1536cf2fa90ba50c9cb95ad1
+    after_sha256: fe6d2967ecfe601dea0130e3c174ccd07fcd9e3714470cd7bdf69c82609275ea
+    declaration_only: true
+  src/flow_factory/trainers/loader.py:
+    symbols: ['load_trainer']
+    marker: 'load_trainer:sft-admission'
+    before_sha256: 911a851f13f67b46a2bf49243b1956a9ee6ef18bc9ff6499594d6a0235e672d5
+    after_sha256: 41b40f8e339f296e1d6eafa2ed7413ce80742cb5b36b9536b3d40e0ee2274318
+
 focused_owners:
+  - paths: [src/flow_factory/models/sft_dropout.py]
+    symbols: ['<separable-caption-policy>', CaptionDropoutPolicy.share_across_references, resolve_sft_dropout]
+    requires: [sft.dropout.core_contracts, sft.dropout.klein_fsdp2, sft.dropout.wan_continuation]
+    reason: Cache eligibility and SFT admission must preserve the stored and on-demand condition and execution identity.
+  - paths:
+    - src/flow_factory/models/qwen_image_21/output_codec.py
+    symbols: ['normalize_condition_img_shapes']
+    requires: ['sft.dropout.core_contracts']
+    reason: Reference geometry must retain all image entries and the supervised target slot.
+  - paths:
+    - src/flow_factory/models/ltx2/ltx2_i2av.py
+    symbols: ['<separable-caption-import>', 'LTX2_I2AV_Adapter.sft_condition_dropout_policy']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2']
+    reason: Validate single-record geometry and the cached text-only overlay while retaining the reference media.
+  - paths:
+    - src/flow_factory/models/wan/wan2_i2v.py
+    symbols: ['<separable-caption-import>', 'Wan2_I2V_Adapter.sft_condition_dropout_policy']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2']
+    reason: Validate single-record geometry and the cached text-only overlay while retaining the reference media.
+  - paths:
+    - src/flow_factory/models/flux/flux3.py
+    symbols: ['<separable-caption-import>', 'Flux3Adapter.sft_condition_dropout_policy']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2']
+    reason: Validate single-record geometry and the cached text-only overlay while retaining the reference media.
+  - paths:
+    - src/flow_factory/models/flux/flux2_klein.py
+    symbols: ['<separable-caption-import>', 'Flux2KleinAdapter.sft_condition_dropout_policy']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2']
+    reason: Validate single-record geometry and the cached text-only overlay while retaining the reference media.
+  - paths:
+    - src/flow_factory/models/flux/flux2.py
+    symbols: ['<separable-caption-import>', 'Flux2Adapter.sft_condition_dropout_policy']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2']
+    reason: Validate single-record geometry and the cached text-only overlay while retaining the reference media.
+  - paths:
+    - src/flow_factory/models/flux/flux1_kontext.py
+    symbols: ['<separable-caption-import>', 'Flux1KontextAdapter.sft_condition_dropout_policy', 'Flux1KontextAdapter.preprocess_func']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2']
+    reason: Validate single-record geometry and the cached text-only overlay while retaining the reference media.
+  - paths:
+    - src/flow_factory/trainers/offline/sft.py
+    symbols: ['SFTTrainer._build_train_dataloader', 'SFTTrainer._record_condition_metrics', 'SFTTrainer.optimize_batch', 'SFTTrainer.runtime_execution_identity_payload', '<import:flow_factory.data_utils.offline_train_data.offline_preprocess_kwargs>', '<import:flow_factory.data_utils.sft_conditions.encode_raw_sft_conditions>', '<import:flow_factory.models.sft_dropout.resolve_sft_dropout>', '<import:flow_factory.utils.dist.data_parallel_geometry>']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: Qualify control over raw/cache conditions, objective and checkpoint state with prepared FSDP2, DP/CP and exact resume.
+  - paths:
+    - src/flow_factory/trainers/loader.py
+    symbols: ['load_trainer:sft-admission']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: Only SFT admission is added before the unchanged shared model-loading path.
+  - paths:
+    - src/flow_factory/models/abc.py
+    symbols: ['<nullable-sft-capability>']
+    requires: ['sft.dropout.core_contracts']
+    reason: Verify all registered adapters and unsupported checkpoints at admission.
+  - paths:
+    - src/flow_factory/hparams/training_args/sft.py
+    symbols: ['SFTTrainingArguments.__post_init__', 'SFTTrainingArguments.condition_dropout', '<import:math>']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.wan_continuation']
+    reason: Reject invalid modes and record the new default in training and resume.
+  - paths:
+    - src/flow_factory/hparams/args.py
+    symbols: ['Arguments._validate_dataset_acquisition_contract']
+    requires: ['sft.dropout.core_contracts']
+    reason: Dataset admission requires both SFT paths and unchanged online and pairwise configuration contracts.
+  - paths:
+    - src/flow_factory/data_utils/sampler.py
+    symbols: ['<definition_order>', 'OfflineConditionSampler', 'OfflineConditionSampler.set_epoch', '<import:torch.utils.data.DistributedSampler>']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.wan_continuation']
+    reason: Finite epoch propagation needs real dropout continuation across DP/CP and the sampler regression.
+  - paths:
+    - src/flow_factory/data_utils/offline_train_data.py
+    symbols: ['<definition_order>', '_build_preprocess_kwargs', 'offline_preprocess_kwargs', 'build_offline_train_dataloader', '<import:dataclasses.replace>', '<import:flow_factory.data_utils.offline_dataset.compute_offline_condition_id>', '<import:flow_factory.contracts.InputMediaOrder>', '<import:flow_factory.contracts.InputMediaSpec>', '<import:flow_factory.models.sft_dropout.CaptionDropoutPolicy>', '<import:flow_factory.models.sft_dropout.SFTConditionDropoutPolicy>', '<import:flow_factory.data_utils.sft_conditions.SFTConditionSource>', '<import:flow_factory.data_utils.sft_conditions.absent_caption_records>']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: Prove both offline data paths, shared cache reuse, synchronized preprocessing and the existing preference-loader contracts.
+  - paths:
+    - src/flow_factory/data_utils/offline_loader.py
+    symbols: ['build_offline_dataloader', '<import:flow_factory.data_utils.sampler.OfflineConditionSampler>']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: Exercise finite per-rank acquisition and epoch-aware condition draws.
+  - paths:
+    - src/flow_factory/data_utils/offline_dataset.py
+    symbols: ['OfflineDataset.__getitem__', 'OfflineDataset.__init__']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: Protect finite dataset IDs, preference arms and target decoding while selecting SFT conditions.
+  - paths:
+    - src/flow_factory/data_utils/dataset.py
+    symbols: ['<definition_order>', 'GeneralDataset._preprocess_batch', 'decode_preprocessing_inputs', 'format_preprocessed_columns']
+    requires: ['sft.dropout.core_contracts', 'sft.dropout.klein_fsdp2', 'sft.dropout.wan_continuation']
+    reason: Raw and cached inputs share the same decode, format and per-record preprocessing; exercise grouped and ordered data plus training.
   - paths:
     - tests/models/test_sensenova.py
     symbols: ['<appended-tests:test_sensenova_sft_uses_native_cfg_prefix>']
