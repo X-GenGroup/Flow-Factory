@@ -5,17 +5,21 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import yaml
 
 from flow_factory.hparams import Arguments
-from flow_factory.trainers.distillation import itdm
+from flow_factory.models.stable_diffusion.sd3_5 import SD3_5Adapter
+from flow_factory.trainers.common import context_parallel
 from flow_factory.trainers.registry import get_trainer_class
+from flow_factory.trainers.rl import itdm
+
+RECIPES = Path(__file__).resolve().parents[2] / "examples/itdm/lora/sd3_5"
 
 
 @pytest.mark.parametrize("reward", ["pickscore", "ocr", "geneval"])
 def test_itdm_config(reward, monkeypatch):
     monkeypatch.setenv("WORLD_SIZE", "8")
-    root = Path(__file__).resolve().parents[2]
-    config = Arguments.load_from_yaml(root / f"examples/itdm/lora/sd3_5/{reward}.yaml")
+    config = Arguments.load_from_yaml(RECIPES / f"{reward}.yaml")
     args = config.training_args
     assert get_trainer_class(args.trainer_type) is itdm.ITDMTrainer
     assert args.global_std == (reward != "geneval")
@@ -30,6 +34,33 @@ def test_itdm_config(reward, monkeypatch):
     assert (args.num_inference_steps, config.eval_args.num_inference_steps) == (10, 40)
     assert args.gradient_accumulation_steps == 36
     assert args.execution_contract == itdm.ITDMTrainer.execution_contract
+
+
+def test_itdm_auto_accumulation_and_cp_admission(monkeypatch):
+    monkeypatch.setenv("WORLD_SIZE", "8")
+    versions = {"torch": "2.11.0", "accelerate": "1.15.0", "diffusers": "0.42.1"}
+    monkeypatch.setattr(context_parallel, "version", versions.__getitem__)
+    raw = yaml.safe_load((RECIPES / "pickscore.yaml").read_text(encoding="utf-8"))
+    raw["parallelism"] = {"tp_size": 2, "cp_size": 2, "sequence_parallel": True}
+    raw["acceleration"] = {
+        "shared": [{"name": "attention_backend", "params": {"backend": "native"}}]
+    }
+    raw["train"].update(
+        per_device_batch_size=1,
+        unique_sample_num_per_epoch=2,
+        group_size=2,
+        gradient_step_per_epoch=2,
+    )
+    assert raw["train"]["gradient_accumulation_steps"] == "auto"
+
+    config = Arguments.from_dict(raw)
+    context_parallel.validate_context_parallel_config(config, SD3_5Adapter, itdm.ITDMTrainer)
+
+    assert config.data_parallel_world_size() == 2
+    assert config.parallelism_args.sequence_parallel is True
+    args = config.training_args
+    assert args.num_batches_per_epoch == 2
+    assert args.gradient_accumulation_steps == 4  # One local batch, four backward terms.
 
 
 def test_signed_velocity_revision_and_detach():

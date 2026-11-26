@@ -1,10 +1,10 @@
 # Algorithm coverage
 
-All **15 registered trainers** explicitly declare the shared CP training contract. They compute
-objectives from the adapter's complete prediction; the common backward boundary applies the CP
-normalization. TP/SP remain model-owned. The combination still has to satisfy the
-[model layout](models.md), [backend configuration](configuration.md), tuning mode and algorithm's
-sampling rules.
+The table covers all **19 registered trainers**. Trainers that declare the shared CP
+training contract compute objectives from the adapter's complete prediction. The common
+backward boundary applies the CP normalization. TP/SP remain model-owned. The combination still
+has to satisfy the [model layout](models.md), [backend configuration](configuration.md), tuning
+mode and algorithm's sampling rules.
 
 This admission is broader than the set of measured recipes. A model numerical test establishes
 its tensor operations; an algorithm lifecycle test also exercises acquisition, feedback, roles,
@@ -19,6 +19,9 @@ The registry keys below are the values of `train.trainer_type`.
 | `grpo` | Generated samples and runtime rewards | Stored stochastic transitions, policy/reference predictions and complete reward groups |
 | `grpo-guard` | Generated samples and runtime rewards | GRPO semantics plus the guard's additional derivative path |
 | `dppo` | Generated samples and runtime rewards | Coupled transition and policy-ratio semantics |
+| `refl` | Generated samples and differentiable rewards | Gradient through a saved-state prediction, clean projection, decoder and reward |
+| `draft` | Generated samples and differentiable rewards | Contiguous backpropagation through the final Euler steps; CP not admitted |
+| `drtune` | Generated samples and differentiable rewards | Sparse backpropagation through selected Euler steps; CP not admitted |
 | `art` | Generated ODE trajectories and runtime rewards | Complete rank-local endpoint groups, frozen rollout velocities and configurable replay updates; component-aware image/video and audio/video losses |
 | `nft` | Generated samples and runtime rewards | Stored old-policy state, shared replay noise and sample-level matching |
 | `awm` | Generated samples and runtime rewards | Weighted matching, old/current queries and optional reference/EMA penalties |
@@ -27,6 +30,7 @@ The registry keys below are the values of `train.trainer_type`.
 | `crd` | Generated samples and runtime rewards | Acquisition-wide first pass, detached centers and old/sampling snapshots |
 | `diffusion-opd` | Generated samples, no training rewards | Source-routed teacher snapshots, cached detached targets and student-only updates |
 | `dmd2` | Generated samples, no training rewards | Separate fake and generator roles; fake updates precede the generator |
+| `itdm` | Generated terminal latents and runtime rewards | Fake and generator phases replay the same time and noise within each logical data replica |
 | `tdm` | Generated trajectories, no training rewards | Stored trajectory boundaries, conditional noise and fake-before-generator updates |
 | `tdm-r1` | Generated trajectories and runtime rewards | Fake, surrogate and generator phases with complete reward-group identity |
 | `sft` | Finite dataset, no training rewards | Target encoding, finite data partitioning and complete accumulation windows |
@@ -36,12 +40,13 @@ Offline training does not generate a training rollout. Reward-free distillation 
 rewards without adding them to the training objective. See the
 [algorithm guide](../training/algorithms.md) for losses, tuning modes and recipe settings.
 
-`itdm` does not declare the CP training contract; configuration rejects context parallelism for it,
-so it trains with data parallelism only.
-
-DMD2, TDM and TDM-R1 keep their roles in one prepared model/optimizer bundle and update them in
+DMD2, TDM, TDM-R1 and iTDM keep their roles in one prepared model/optimizer bundle and update them in
 separate phases. Frozen references, EMA and teacher snapshots retain their own ownership.
 Adding TP or CP does not turn these into independent data replicas or change role cadence.
+
+iTDM uses SD3.5's existing TP/SP/CP layouts with LoRA and ODE rollouts. With CP enabled, use the
+shared FSDP2, BF16, native attention and per-device batch-size requirements in the
+[configuration guide](configuration.md).
 
 ## Sampling and feedback count logical replicas
 

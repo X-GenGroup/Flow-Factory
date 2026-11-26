@@ -47,7 +47,7 @@ owners:
             examples/draft/**, tests/trainers/test_draft.py, tests/distributed/test_draft_training.py]
     requires: [algorithm.draft.contracts, algorithm.draft.ddp, algorithm.draft.fsdp2]
     reason: Verify the independent suffix derivative, the native endpoint, and prepared policy updates.
-  - paths: [src/flow_factory/hparams/training_args/itdm.py, src/flow_factory/trainers/distillation/itdm.py,
+  - paths: [src/flow_factory/hparams/training_args/itdm.py, src/flow_factory/trainers/rl/itdm.py,
             src/flow_factory/scheduler/dpmpp_multistep.py, examples/itdm/**, tests/trainers/test_itdm.py,
             tests/trainers/test_itdm_dpm.py]
     requires: [algorithm.itdm.contracts, optimization.full_output_backward]

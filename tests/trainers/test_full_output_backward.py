@@ -25,6 +25,7 @@ from accelerate import Accelerator
 
 from flow_factory.hparams import ITDMTrainingArguments, TDMR1TrainingArguments
 from flow_factory.hparams.training_args._registry import list_registered_training_args
+from flow_factory.models.abc import BaseAdapter
 from flow_factory.samples import (
     BaseSample,
     ComponentTimes,
@@ -36,9 +37,9 @@ from flow_factory.samples import (
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.common import context_parallel
 from flow_factory.trainers.distillation.distillation_runtime import pop_distillation_metrics
-from flow_factory.trainers.distillation.itdm import ITDMTrainer
 from flow_factory.trainers.distillation.tdm_r1 import TDMR1Trainer
 from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
+from flow_factory.trainers.rl.itdm import ITDMTrainer
 from flow_factory.trainers.role_optimization import OptimizationRole, RoleOptimizationCoordinator
 from flow_factory.utils.group_coordinator import GroupCoordinator
 from tests.models.minimax_h3 import test_no_weight_production_acceptance as h3
@@ -367,7 +368,42 @@ def _itdm_trainer(metrics):
             metrics[role].append(data[f"train/{role}_loss"])
 
     trainer.log_data = log_data
-    return trainer, tuple(bundle.parameters()), lambda: trainer.optimize(samples)
+    return trainer, tuple(bundle.parameters()), samples
+
+
+def test_itdm_replays_the_same_perturbations_across_roles_and_model_peers():
+    trainer, _, samples = _itdm_trainer(defaultdict(list))
+    perturbations = []
+
+    def observe(clean, times, *, generator):
+        noised = BaseAdapter.add_forward_process_noise(
+            trainer.adapter, clean, times, generator=generator
+        )
+        perturbations.append(noised.state.components["latent"])
+        return noised
+
+    trainer.adapter.add_forward_process_noise = observe
+
+    def draw(rank, *, parallelism_config=None):
+        trainer.accelerator = SimpleNamespace(
+            device=torch.device("cpu"),
+            num_processes=2 if parallelism_config is None else 4,
+            process_index=rank,
+            parallelism_config=parallelism_config,
+        )
+        for role in ("fake", "generator"):
+            with trainer.adapter.use_component_variant(role):
+                trainer._loss(samples, 0, role, (0, 0))
+        torch.testing.assert_close(perturbations[-2], perturbations[-1], rtol=0, atol=0)
+        return perturbations[-1]
+
+    replica_zero = draw(0)
+    assert not torch.equal(replica_zero, draw(1))
+    plan = SimpleNamespace(dp_shard_size=1, dp_replicate_size=1, tp_size=2, cp_size=2)
+    for rank in range(4):
+        torch.testing.assert_close(
+            draw(rank, parallelism_config=plan), replica_zero, rtol=0, atol=0
+        )
 
 
 def _case(name, monkeypatch):
@@ -407,8 +443,8 @@ def _case(name, monkeypatch):
         )
         return trainer, parameters, lambda: trainer.optimize(samples), metrics, 1
     elif name == "itdm":
-        trainer, parameters, run = _itdm_trainer(metrics)
-        return trainer, parameters, run, metrics, 2
+        trainer, parameters, samples = _itdm_trainer(metrics)
+        return trainer, parameters, lambda: trainer.optimize(samples), metrics, 2
     elif name in {"dmd2", "tdm", "tdm-r1"}:
         if name == "dmd2":
             trainer, _, bundle = dmd._real_objective_trainer()

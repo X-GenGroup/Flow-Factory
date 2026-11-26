@@ -527,7 +527,7 @@ cases:
   covers: [algorithm.itdm.contracts]
   facets: [objective, roles]
   owners:
-  - src/flow_factory/trainers/distillation/itdm.py
+  - src/flow_factory/trainers/rl/itdm.py
   - src/flow_factory/hparams/training_args/itdm.py
   - src/flow_factory/scheduler/dpmpp_multistep.py
   command: [python3, -m, pytest, -q, tests/trainers/test_itdm.py, tests/trainers/test_itdm_dpm.py]
@@ -540,9 +540,9 @@ cases:
   oracle:
     kind: numerical
     reward: none
-    description: Parse every recipe and its role/solver admission, check the detached signed revision
-      loss and gradient, reuse of keyed time windows across TTUR phases, and DPM++ 2M rollout and
-      velocity-query parity with diffusers at 10 and 40 steps.
+    description: Parse every recipe, check CP admission and auto accumulation with TP/SP/CP,
+      the detached signed revision loss and gradient, reuse of keyed time windows across TTUR
+      phases, and DPM++ 2M rollout and velocity-query parity with diffusers at 10 and 40 steps.
   artifacts:
   - tests/trainers/test_itdm.py
   - tests/trainers/test_itdm_dpm.py

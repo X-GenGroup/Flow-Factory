@@ -1082,6 +1082,8 @@ train:
     num_inference_steps: 10
     num_train_timesteps: 4
     max_timestep_index: 8
+    gradient_step_per_epoch: 1
+    gradient_accumulation_steps: auto
     ttur: 1
     dsm_with_default: false
     kl_beta: 0.001
@@ -1097,7 +1099,13 @@ optimizers:
     learning_rate: 3.0e-4
 ```
 
-**Cadence and shared perturbations**: Unlike `dmd2`, `tdm`, and `tdm-r1` (which repeat `fake` within one cycle via `optimizers[*].update_frequency`), `itdm` requires `update_frequency: 1` on both optimizer entries and controls cross-epoch policy cadence with `train.ttur`. Each inner epoch draws `num_train_timesteps` distinct rollout step indices without replacement from `0` through `max_timestep_index` using a rank-synchronized generator (`1 <= num_train_timesteps <= max_timestep_index + 1 <= num_inference_steps`; e.g., four indices from `0..8` on a ten-step rollout, skipping the near-clean final step). Forward-process noise is deterministically replayed from `(seed, epoch, inner_epoch, batch_offset, timestep_index, rank)` so both `fake` and `generator` observe identical perturbations without caching epoch-wide GPU noise tensors. By default, optimization retains rollout order; set `train.shuffle_samples: true` to shuffle each rank's samples after advantage computation and reuse that order across both roles within the inner epoch. On each rank, `len(samples)` must be divisible by `per_device_batch_size`, and `(len(samples) // per_device_batch_size) * num_train_timesteps` must be divisible by `gradient_accumulation_steps`.
+**Cadence and shared perturbations**: Unlike `dmd2`, `tdm`, and `tdm-r1` (which repeat `fake` within one cycle via `optimizers[*].update_frequency`), `itdm` requires `update_frequency: 1` on both optimizer entries and controls cross-epoch policy cadence with `train.ttur`. Each inner epoch draws `num_train_timesteps` distinct rollout step indices without replacement from `0` through `max_timestep_index` using a rank-synchronized generator (`1 <= num_train_timesteps <= max_timestep_index + 1 <= num_inference_steps`; e.g., four indices from `0..8` on a ten-step rollout, skipping the near-clean final step). Forward-process noise is keyed by `(seed, epoch, inner_epoch, batch_offset, timestep_index, data_parallel_rank)`. Both roles and all TP/CP peers in one data replica reuse the same perturbations without storing them. By default, optimization retains rollout order. Set `train.shuffle_samples: true` to shuffle after advantage computation and reuse the same order across both roles.
+
+Keep `gradient_accumulation_steps: auto` as in the shipped recipes. After sampler alignment,
+the framework derives the number of local batches per update from the logical DP size and
+`gradient_step_per_epoch`, then multiplies by `num_train_timesteps`. Fake and generator use
+separate accumulation windows, so the number of roles does not multiply GAS. See the
+[parallelism guide](../parallelism/configuration.md) for the applicable SD3.5 TP/SP/CP settings.
 
 **Model, LoRA variants, and solver**: `itdm` requires `sd3-5` LoRA fine-tuning, `ODE` dynamics, training `rewards`, and `group_size >= 2`. Both roles share the multi-role optimizer and checkpoint runtime (default AdamW uses `learning_rate=3.0e-4` with `betas=(0.9, 0.999)` for `generator` and `betas=(0.0, 0.999)` for `fake`). The `fake` LoRA starts as a copy of the `generator` LoRA and runs standalone on the base model by default; set `train.dsm_with_default: true` to stack `fake` on top of the frozen `generator` LoRA during DSM forwards so `fake` fits only the velocity residual. The SD3.5 recipes generate 24 images for each of 24 prompts (576 images per rollout), update the policy once per epoch with the framework's standard-deviation floor on advantage normalization, and set `scheduler.solver: dpmpp_2m` (deterministic DPM-Solver++ 2M with fixed `flow_shift=3.0`) for both 10-step rollouts and 40-step evaluation; set `scheduler.solver: pipeline` to select the native SD3.5 Euler scheduler. See the [SD3.5 configurations](../../examples/itdm/lora/sd3_5).
 

@@ -16,6 +16,7 @@
 
 from dataclasses import replace
 from functools import partial
+from typing import ClassVar
 
 import torch
 import torch.nn.functional as F
@@ -24,10 +25,12 @@ from ...contracts.execution import ONLINE_EXECUTION_CONTRACT
 from ...hparams.optimizer_args import resolve_role_optimizer_args
 from ...samples import BaseSample
 from ...utils.base import create_generator
+from ...utils.dist import data_parallel_geometry
 from ..abc import BaseTrainer
+from ..common.context_parallel import ContextParallelTrainingCapability
 from ..common.group_noise import training_timestep_generator
 from ..common.replay_batching import move_and_stack_samples
-from .distillation_runtime import (
+from ..distillation.distillation_runtime import (
     log_distillation_metrics,
     query_score_velocity,
     record_distillation_metric,
@@ -54,6 +57,9 @@ class ITDMTrainer(BaseTrainer):
 
     paradigm = "decoupled"
     execution_contract = ONLINE_EXECUTION_CONTRACT
+    context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
+        ContextParallelTrainingCapability()
+    )
 
     def _optimizer_args_for_role(self, role_name):
         return resolve_role_optimizer_args(
@@ -83,8 +89,8 @@ class ITDMTrainer(BaseTrainer):
         self.adapter.train()
         for inner in range(args.num_inner_epochs):
             ordered_samples = self._order_samples_for_optimize(samples, inner)
-            # All ranks use the same keyed time draw. Noise uses a separate per-rank
-            # stream, replayed by key so no epoch-sized cache of GPU noise is needed.
+            # All ranks use the same time draw. Each logical data replica replays
+            # its own keyed noise in both roles without caching GPU tensors.
             indices = torch.randperm(
                 args.max_timestep_index + 1, generator=training_timestep_generator(self, inner, 0)
             )[: args.num_train_timesteps].tolist()
@@ -118,13 +124,14 @@ class ITDMTrainer(BaseTrainer):
         times = self.adapter.build_training_component_times(
             batch["timesteps"][:, index], batch=batch
         )
+        _, replica_rank = data_parallel_geometry(self.accelerator)
         rng = create_generator(
             args.seed,
             self.epoch,
             inner,
             start,
             index,
-            self.accelerator.process_index,
+            replica_rank,
             device=device,
         )
         noised = self.adapter.add_forward_process_noise(clean, times, generator=rng)
