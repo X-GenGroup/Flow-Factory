@@ -252,6 +252,7 @@ def test_concrete_registry_capabilities_do_not_leak_to_subclasses(config):
         "dgpo",
         "crd",
         "diffusion-opd",
+        "itdm",
         "tdm",
         "tdm-r1",
     }

@@ -19,10 +19,31 @@ from pathlib import Path
 
 import torch
 from flux_sft_fixture import _tokenizer
-from test_sd35_context_parallel import build_transformer
 from transformers import CLIPTextConfig, CLIPTextModelWithProjection, T5Config, T5EncoderModel
 
 from diffusers import AutoencoderKL, FlowMatchEulerDiscreteScheduler, StableDiffusion3Pipeline
+
+
+def build_transformer(family, head_dim=8):
+    from diffusers import SD3Transformer2DModel
+
+    heads = 24 if family == "medium" else 38
+    torch.manual_seed(620)
+    return SD3Transformer2DModel(
+        sample_size=8,
+        patch_size=2,
+        in_channels=16,
+        out_channels=16,
+        num_layers=2,
+        attention_head_dim=head_dim,
+        num_attention_heads=heads,
+        joint_attention_dim=32,
+        caption_projection_dim=heads * head_dim,
+        pooled_projection_dim=16,
+        pos_embed_max_size=8,
+        dual_attention_layers=(0,) if family == "medium" else (),
+        qk_norm="rms_norm",
+    )
 
 
 def build_pipeline(family):

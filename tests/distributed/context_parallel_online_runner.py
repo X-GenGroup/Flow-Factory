@@ -281,20 +281,24 @@ def _worker(rank, store_path, result_dir, options):
                 loaded["runtime"]["children"]["adapter_reference"],
                 exact=True,
             )
-        if options["algorithm"] == "dmd2":
+        rank_local_feedback = [
+            sample["sample"]
+            for cycle in records["feedback"]
+            for index, sample in enumerate(cycle)
+            if index % model_degree == rank % model_degree
+        ]
+        if hasattr(case, "assert_feedback"):
+            # Recipes whose acquisition shape matches neither branch below own
+            # their reward identity, cadence and replay expectations.
+            case.assert_feedback(trainer, records, rank_local_feedback, cycles)
+        elif options["algorithm"] == "dmd2":
             assert not trainer.reward_models and not MemberReward.scored and not records["feedback"]
             assert Counter(u["role"] for u in records["updates"]) == {
                 "generator": cycles,
                 "fake": cycles * 2,
             }
         else:
-            expected_scored = [
-                sample["sample"]
-                for cycle in records["feedback"]
-                for index, sample in enumerate(cycle)
-                if index % model_degree == rank % model_degree
-            ]
-            assert Counter(MemberReward.scored) == Counter(expected_scored)
+            assert Counter(MemberReward.scored) == Counter(rank_local_feedback)
             assert len(records["feedback"]) == cycles
             assert len(records["replay_log_probs"]) == 4 * cycles
         assert not records["backward_losses"]
@@ -453,9 +457,12 @@ def _qualify_online(
                 else _compare_bf16_updates(a, b)
             )
             residuals.append({"rank": rank, "role": role, "updates": metrics})
-    for degree in (1, 2):
-        rewards = [sample for rank in groups[degree] for sample in rank["rewards"]]
-        assert len(rewards) == (4 * dp_size if algorithm == "grpo" else 0)
+    if not hasattr(case, "assert_feedback"):
+        # A case that owns its feedback shape already asserted the rank-local
+        # reward identity per worker, which subsumes this aggregate row count.
+        for degree in (1, 2):
+            rewards = [sample for rank in groups[degree] for sample in rank["rewards"]]
+            assert len(rewards) == (4 * dp_size if algorithm == "grpo" else 0)
     # Restore from the actual drained checkpoint produced halfway through the
     # continuous CP run. No separate model/optimizer format is used by this probe.
     resume_dir = tmp_path / "resumed"
@@ -513,8 +520,17 @@ def _qualify_online(
             continuation.append(
                 {"rank": rank, "role": role, "updates": _compare_bf16_updates(a, b)}
             )
-        # Online EMA runs once per complete acquisition, after every role phase.
-        cycle_updates = joined["updates"][2::3] if algorithm == "dmd2" else joined["updates"]
+        # Online EMA runs once per complete acquisition, after every role phase, so
+        # the trajectory follows the last update of each cycle. The stride is however
+        # many updates one cycle performs: 1 for a single-policy recipe, 3 for DMD2's
+        # two fake phases plus its generator, 2 for a fake/generator pair.
+        if len(joined["updates"]) % 2:
+            raise AssertionError(
+                f"expected a whole number of updates per cycle over two cycles, received "
+                f"{len(joined['updates'])}"
+            )
+        stride = len(joined["updates"]) // 2
+        cycle_updates = joined["updates"][stride - 1 :: stride]
         _assert_ema_trajectory(continuous["loaded"], resumed["final"], cycle_updates)
         _compare(resumed["final"]["runtime"], continuous["final"]["runtime"])
         if algorithm == "dmd2":

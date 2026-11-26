@@ -50,7 +50,7 @@ owners:
   - paths: [src/flow_factory/hparams/training_args/itdm.py, src/flow_factory/trainers/rl/itdm.py,
             src/flow_factory/scheduler/dpmpp_multistep.py, examples/itdm/**, tests/trainers/test_itdm.py,
             tests/trainers/test_itdm_dpm.py]
-    requires: [algorithm.itdm.contracts, optimization.full_output_backward]
+    requires: [algorithm.itdm.contracts, algorithm.itdm.cp, optimization.full_output_backward]
     reason: iTDM owns the online DSM fit, detached reward revision, TTUR cadence and the SD3.5-only
       DPM++ 2M rollout; verify the objective, recipes and solver parity with the role backward path.
   - paths: [src/flow_factory/trainers/common/reward_gradient.py]

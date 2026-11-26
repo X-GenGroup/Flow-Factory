@@ -23,8 +23,6 @@ def test_itdm_config(reward, monkeypatch):
     args = config.training_args
     assert get_trainer_class(args.trainer_type) is itdm.ITDMTrainer
     assert args.global_std == (reward != "geneval")
-    assert args.dsm_with_default is False
-    assert args.stack_base_lora_variants == ()
     assert args.advantage_aggregation == "gdpo"
     assert (args.unique_sample_num_per_epoch, args.group_size) == (24, 24)
     assert args.gradient_step_per_epoch == 1
@@ -121,3 +119,58 @@ def test_ttur_reuses_time_windows(monkeypatch, epoch, expected, shuffle):
     assert [role for role, _ in calls] == expected
     if epoch == 1:
         assert [w for _, w in calls[:2]] == [w for _, w in calls[2:]]
+
+
+def _seeding_trainer(records, restored):
+    """Build a real ITDMTrainer identity so ``super()`` resolves to the base method."""
+    trainer = object.__new__(itdm.ITDMTrainer)
+    trainer.restored_training_roles = restored
+    trainer.adapter = SimpleNamespace(
+        component_variant_registry=SimpleNamespace(
+            base_variant="generator", parameter_records=records.__getitem__
+        )
+    )
+    return trainer
+
+
+def _records(**roles):
+    return {
+        role: [
+            SimpleNamespace(component_name="transformer", parameter_name=name, parameter=tensor)
+            for name, tensor in tensors
+        ]
+        for role, tensors in roles.items()
+    }
+
+
+@pytest.mark.parametrize("restored", [frozenset(), frozenset({"fake"})])
+def test_fake_role_is_seeded_from_the_policy_only_when_the_checkpoint_omits_it(
+    restored, monkeypatch
+):
+    """The DSM role starts at the policy it revises, and a resumed role is preserved."""
+    policy = [torch.full((2, 2), 0.5), torch.full((2,), 0.25)]
+    fake = [torch.zeros(2, 2), torch.ones(2)]
+    untouched = [tensor.clone() for tensor in fake]
+    names = ("attn.to_q.lora_A.{adapter}.weight", "attn.to_q.lora_B.{adapter}.weight")
+    records = _records(
+        generator=[(n.format(adapter="default"), t) for n, t in zip(names, policy)],
+        fake=[(n.format(adapter="fake"), t) for n, t in zip(names, fake)],
+    )
+    declared = []
+    monkeypatch.setattr(
+        itdm.BaseTrainer, "_declare_model_variants", lambda self: declared.append(self)
+    )
+    trainer = _seeding_trainer(records, restored)
+    trainer._declare_model_variants()
+
+    assert declared == [trainer], "the base declaration must run before any seeding"
+    for actual, expected in zip(fake, untouched if restored else policy):
+        torch.testing.assert_close(actual, expected)
+
+
+def test_seeding_reports_a_policy_role_that_cannot_cover_the_fake_role(monkeypatch):
+    records = _records(generator=[], fake=[("attn.to_q.lora_A.fake.weight", torch.zeros(1))])
+    monkeypatch.setattr(itdm.BaseTrainer, "_declare_model_variants", lambda self: None)
+    trainer = _seeding_trainer(records, frozenset())
+    with pytest.raises(ValueError, match=r"lora_A\.default\.weight as the counterpart"):
+        trainer._declare_model_variants()

@@ -22,7 +22,7 @@ from types import MappingProxyType
 from typing import Any, Dict, Iterator, List, Literal, Mapping, Optional, Tuple, cast
 
 import torch
-from peft import PeftModel, get_peft_model_state_dict, set_peft_model_state_dict
+from peft import PeftModel
 
 from ..utils.tensor_state import validate_tensor_state
 
@@ -55,9 +55,6 @@ class ComponentVariantSpec:
     storage_mode: VariantStorageMode
     component_routes: Mapping[str, str]
     adapter_name: Optional[str] = None
-
-    copy_base_lora: bool = False
-    stack_base_lora: bool = False
 
     def __post_init__(self) -> None:
         """Validate and detach declaration values."""
@@ -395,16 +392,11 @@ class ComponentVariantRegistry:
                     f"received adapter_name={spec.adapter_name!r}"
                 )
             for component_name in self._canonical_components:
-                component = self._get_peft_component(component_name)
-                # Keep PEFT's single-adapter checkpoint destination aligned with
-                # the role even when its LoRA tuner composes two forward adapters.
-                component.set_adapter(spec.adapter_name)
-                if spec.stack_base_lora:
-                    component.base_model.set_adapter(["default", spec.adapter_name])
+                self._get_peft_component(component_name).set_adapter(spec.adapter_name)
 
+        self._restore_trainable_variant_parameters()
         self._active_context = next_context
         self._active_variant = variant_name
-        self._restore_trainable_variant_parameters()
 
     @property
     def active_variant(self) -> VariantName:
@@ -1042,9 +1034,6 @@ class ComponentVariantRegistry:
                     spec.adapter_name,
                     copy.deepcopy(component.peft_config["default"]),
                 )
-                if spec.copy_base_lora:
-                    state = get_peft_model_state_dict(component, adapter_name="default")
-                    set_peft_model_state_dict(component, state, adapter_name=spec.adapter_name)
                 new_parameters = [
                     (parameter_name, parameter)
                     for parameter_name, parameter in component.named_parameters()
@@ -1109,7 +1098,7 @@ class ComponentVariantRegistry:
                 self.register_parameter(variant_name, component_name, parameter_name, parameter)
 
     def restore_trainable_parameters(self) -> None:
-        """Restore owned parameters and freeze a composed role's base LoRA.
+        """Re-mark every identity-owned variant parameter as trainable.
 
         Public because anything that changes adapter state behind the registry's back has
         to hand this invariant back. PEFT keeps only the active adapter trainable, so a
@@ -1118,16 +1107,12 @@ class ComponentVariantRegistry:
         every gradient and reports nothing, because autograd reads ``requires_grad`` when
         backward executes rather than when the graph was built.
         """
-        active = self._specs.get(self._active_variant)
         for variant_name in self._specs:
-            frozen = (
-                active is not None and active.stack_base_lora and variant_name == self.base_variant
-            )
             for record in self._parameter_records[variant_name]:
-                record.parameter.requires_grad_(not frozen)
+                record.parameter.requires_grad = True
 
     def _restore_trainable_variant_parameters(self) -> None:
-        """Restore the active route's trainability policy."""
+        """Keep every identity-owned variant parameter trainable."""
         self.restore_trainable_parameters()
 
     def _get_peft_component(self, component_name: str) -> PeftModel:

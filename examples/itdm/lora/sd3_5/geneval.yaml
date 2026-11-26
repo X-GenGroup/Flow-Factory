@@ -39,6 +39,7 @@ train:
   enable_gradient_checkpointing: true
   latent_storage_dtype: float32
   ema_decay: 0.9
+  ema_update_interval: 1
   seed: 42
   global_std: false
 scheduler:

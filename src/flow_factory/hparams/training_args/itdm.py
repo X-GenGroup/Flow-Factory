@@ -27,7 +27,6 @@ class ITDMTrainingArguments(TrainingArguments):
     """Train a reward-revised generator and its online denoising score."""
 
     required_trainable_roles: ClassVar = ("generator", "fake")
-    copy_base_lora_variants: ClassVar = ("fake",)
     global_std: bool = True
     advantage_aggregation: Literal["sum", "gdpo"] = "gdpo"
     shuffle_samples: bool = False
@@ -37,13 +36,8 @@ class ITDMTrainingArguments(TrainingArguments):
     num_train_timesteps: int = 4
     max_timestep_index: int = 8
     ttur: int = 1
-    dsm_with_default: bool = False
     kl_beta: float = 0.001
     advantage_clip_range: float = 5.0
-
-    @property
-    def stack_base_lora_variants(self):
-        return ("fake",) if self.dsm_with_default else ()
 
     def validate_configuration(self, args):
         if args.model_args.model_type != "sd3-5" or args.model_args.finetune_type != "lora":
@@ -55,8 +49,6 @@ class ITDMTrainingArguments(TrainingArguments):
         for name in ("num_train_timesteps", "max_timestep_index", "ttur"):
             if type(getattr(self, name)) is not int:
                 raise TypeError(f"train.{name} must be an integer")
-        if not isinstance(self.dsm_with_default, bool):
-            raise TypeError("train.dsm_with_default must be a boolean")
         if (
             not 1
             <= self.num_train_timesteps

@@ -39,6 +39,23 @@ from ..distillation.distillation_runtime import (
 )
 
 
+def _policy_parameter_name(parameter_name: str, role_adapter: str, policy_variant: str) -> str:
+    """Return the policy counterpart of one role-owned LoRA parameter name.
+
+    PEFT names a tuner weight ``<module>.lora_X.<adapter>.<suffix>``, so only the
+    segment that follows a ``lora_`` tuner segment names the adapter. The base
+    variant owns PEFT's ``default`` adapter.
+    """
+    parts = parameter_name.split(".")
+    for index in range(1, len(parts)):
+        if parts[index] == role_adapter and parts[index - 1].startswith("lora_"):
+            return ".".join(parts[:index] + ["default"] + parts[index + 1 :])
+    raise ValueError(
+        f"expected a PEFT tuner segment before adapter {role_adapter!r} in parameter "
+        f"{parameter_name!r} while seeding it from policy variant {policy_variant!r}"
+    )
+
+
 def revised_velocity_loss(
     policy: torch.Tensor,
     dsm: torch.Tensor,
@@ -60,6 +77,38 @@ class ITDMTrainer(BaseTrainer):
     context_parallel_training_capability: ClassVar[ContextParallelTrainingCapability] = (
         ContextParallelTrainingCapability()
     )
+
+    def _declare_model_variants(self) -> None:
+        """Seed the DSM role from the policy LoRA once the roles hold final weights.
+
+        Upstream iTDM initializes ``dsm`` from ``default`` *after* placing the policy
+        adapter, so a warm start fits the score to the policy it will revise. The base
+        declaration restores whichever roles the checkpoint provides first; only a role
+        the checkpoint omits still needs seeding.
+        """
+        super()._declare_model_variants()
+        if "fake" in self.restored_training_roles:
+            return
+        registry = self.adapter.component_variant_registry
+        policy = registry.base_variant
+        base = {
+            (record.component_name, record.parameter_name): record.parameter
+            for record in registry.parameter_records(policy)
+        }
+        with torch.no_grad():
+            for record in registry.parameter_records("fake"):
+                key = (
+                    record.component_name,
+                    _policy_parameter_name(record.parameter_name, "fake", policy),
+                )
+                source = base.get(key)
+                if source is None:
+                    raise ValueError(
+                        f"iTDM expected policy parameter {key[0]}.{key[1]} as the counterpart "
+                        f"for fake parameter {record.component_name}.{record.parameter_name}, "
+                        f"received none among {len(base)} policy parameters"
+                    )
+                record.parameter.copy_(source)
 
     def _optimizer_args_for_role(self, role_name):
         return resolve_role_optimizer_args(

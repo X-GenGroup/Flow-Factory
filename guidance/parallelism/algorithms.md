@@ -46,7 +46,9 @@ Adding TP or CP does not turn these into independent data replicas or change rol
 
 iTDM uses SD3.5's existing TP/SP/CP layouts with LoRA and ODE rollouts. With CP enabled, use the
 shared FSDP2, BF16, native attention and per-device batch-size requirements in the
-[configuration guide](configuration.md).
+[configuration guide](configuration.md). The measured evidence compares CP1 against CP2 at TP1 and
+TP2 for rollout identity, reward-group routing, advantages, each role's update and a drained
+checkpoint continuation (`algorithm.itdm.cp`).
 
 ## Sampling and feedback count logical replicas
 

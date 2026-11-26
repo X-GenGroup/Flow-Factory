@@ -1085,7 +1085,6 @@ train:
     gradient_step_per_epoch: 1
     gradient_accumulation_steps: auto
     ttur: 1
-    dsm_with_default: false
     kl_beta: 0.001
     advantage_aggregation: 'gdpo'
     advantage_clip_range: 5.0
@@ -1107,7 +1106,7 @@ the framework derives the number of local batches per update from the logical DP
 separate accumulation windows, so the number of roles does not multiply GAS. See the
 [parallelism guide](../parallelism/configuration.md) for the applicable SD3.5 TP/SP/CP settings.
 
-**Model, LoRA variants, and solver**: `itdm` requires `sd3-5` LoRA fine-tuning, `ODE` dynamics, training `rewards`, and `group_size >= 2`. Both roles share the multi-role optimizer and checkpoint runtime (default AdamW uses `learning_rate=3.0e-4` with `betas=(0.9, 0.999)` for `generator` and `betas=(0.0, 0.999)` for `fake`). The `fake` LoRA starts as a copy of the `generator` LoRA and runs standalone on the base model by default; set `train.dsm_with_default: true` to stack `fake` on top of the frozen `generator` LoRA during DSM forwards so `fake` fits only the velocity residual. The SD3.5 recipes generate 24 images for each of 24 prompts (576 images per rollout), update the policy once per epoch with the framework's standard-deviation floor on advantage normalization, and set `scheduler.solver: dpmpp_2m` (deterministic DPM-Solver++ 2M with fixed `flow_shift=3.0`) for both 10-step rollouts and 40-step evaluation; set `scheduler.solver: pipeline` to select the native SD3.5 Euler scheduler. See the [SD3.5 configurations](../../examples/itdm/lora/sd3_5).
+**Model, LoRA variants, and solver**: `itdm` requires `sd3-5` LoRA fine-tuning, `ODE` dynamics, training `rewards`, and `group_size >= 2`. Both roles share the multi-role optimizer and checkpoint runtime (default AdamW uses `learning_rate=3.0e-4` with `betas=(0.9, 0.999)` for `generator` and `betas=(0.0, 0.999)` for `fake`). The `fake` LoRA starts as a copy of the `generator` LoRA and runs standalone on the base model. The SD3.5 recipes generate 24 images for each of 24 prompts (576 images per rollout), update the policy once per epoch with the framework's standard-deviation floor on advantage normalization, and set `scheduler.solver: dpmpp_2m` (deterministic DPM-Solver++ 2M with fixed `flow_shift=3.0`) for both 10-step rollouts and 40-step evaluation; set `scheduler.solver: pipeline` to select the native SD3.5 Euler scheduler. See the [SD3.5 configurations](../../examples/itdm/lora/sd3_5).
 
 ## ReFL
 

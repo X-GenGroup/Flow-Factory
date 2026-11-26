@@ -23,7 +23,7 @@ import torch
 from accelerate import FullyShardedDataParallelPlugin
 from peft import LoraConfig, get_peft_model
 
-from flow_factory.models.abc import BaseAdapter, CheckpointEntry
+from flow_factory.models.abc import BaseAdapter
 from flow_factory.models.model_bundle import ModelBundle, RoutedComponentProxy
 from flow_factory.models.variants import DEFAULT_BASE_VARIANT as BASE_VARIANT
 from flow_factory.models.variants import (
@@ -855,55 +855,3 @@ def test_base_adapter_keeps_four_method_abstract_contract() -> None:
         "inference",
         "forward",
     }
-
-
-@pytest.mark.parametrize("stacked", [False, True])
-def test_copied_lora_role_keeps_generator_frozen_during_recomputation(stacked):
-    from torch.utils.checkpoint import checkpoint
-
-    adapter = _TinyRoleAdapter("lora")
-    adapter.training_args = SimpleNamespace(
-        copy_base_lora_variants=("fake",), stack_base_lora_variants=("fake",) if stacked else ()
-    )
-    component = adapter.get_component("transformer")
-    with torch.no_grad():
-        for param in component.parameters():
-            if param.requires_grad:
-                param.fill_(0.5)
-    adapter.declare_component_variants(["generator", "fake"])
-    registry = adapter.component_variant_registry
-    x = torch.ones(1, 2, requires_grad=True)
-    generator = component(x).detach()
-    with component.disable_adapter():
-        base = component(x).detach()
-    with registry.use("fake"):
-        assert component.active_adapter == "fake"
-        pred = checkpoint(component, x, use_reentrant=False)
-        torch.testing.assert_close(pred, generator + (generator - base if stacked else 0))
-        with registry.use("fake"):
-            pred.sum().backward()
-        assert all(p.grad is None for p in registry.parameters("generator"))
-        assert all(p.grad is not None for p in registry.parameters("fake"))
-    torch.testing.assert_close(component(x), generator)
-    _assert_all_owned_role_parameters_trainable(registry)
-
-
-def test_stacked_lora_checkpoint_restores_only_target_role(tmp_path):
-    adapter = _TinyRoleAdapter("lora")
-    adapter.accelerator.is_main_process = True
-    adapter.training_args = SimpleNamespace(stack_base_lora_variants=("fake",))
-    adapter.declare_component_variants(["generator", "fake"])
-    module = adapter.get_component("transformer")
-    registry = adapter.component_variant_registry
-    generator_before = [p.detach().clone() for p in registry.parameters("generator")]
-    with torch.no_grad(), registry.use("fake"):
-        for parameter in registry.parameters("fake"):
-            parameter.fill_(2)
-        module.save_pretrained(tmp_path, selected_adapters=["fake"])
-        for parameter in registry.parameters("fake"):
-            parameter.zero_()
-        adapter._load_lora_entry(CheckpointEntry("transformer", "fake", "fake"), str(tmp_path))
-        for parameter in registry.parameters("fake"):
-            torch.testing.assert_close(parameter, torch.full_like(parameter, 2))
-    for actual, expected in zip(registry.parameters("generator"), generator_before):
-        torch.testing.assert_close(actual, expected)

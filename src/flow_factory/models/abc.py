@@ -1684,9 +1684,6 @@ class BaseAdapter(ABC):
         )
         base_variant = trainable_variants[0]
         registry = ComponentVariantRegistry(self)
-        training_args = getattr(self, "training_args", None)
-        copy_base = getattr(training_args, "copy_base_lora_variants", ())
-        stack_base = getattr(training_args, "stack_base_lora_variants", ())
         for variant_name in trainable_variants:
             is_base = variant_name == base_variant
             if finetune_type == "lora":
@@ -1709,8 +1706,6 @@ class BaseAdapter(ABC):
                     storage_mode=finetune_type,
                     component_routes=component_routes,
                     adapter_name=adapter_name,
-                    copy_base_lora=variant_name in copy_base,
-                    stack_base_lora=variant_name in stack_base,
                 )
             )
         registry.materialize(trainable_variants)
@@ -3429,7 +3424,7 @@ class BaseAdapter(ABC):
             primary.setdefault(entry.component, entry)
         return list(primary.values())
 
-    def restore_training_roles(self, path: str) -> None:
+    def restore_training_roles(self, path: str) -> Set[str]:
         """Place a checkpoint's non-primary roles now that the variants exist.
 
         A weight-only resume runs while the adapter is being built, before the trainer
@@ -3439,6 +3434,10 @@ class BaseAdapter(ABC):
 
         Args:
             path: Checkpoint directory to restore from.
+
+        Returns:
+            The roles this call placed. A role the checkpoint omits is absent, so a
+            caller that derives one role from another can tell the two cases apart.
         """
         registry = getattr(self, "component_variant_registry", None)
         if registry is None:
@@ -3450,8 +3449,9 @@ class BaseAdapter(ABC):
         entries = self._checkpoint_entries(path)
         deferred = [entry for entry in entries if entry not in self._primary_entries(entries)]
         if not deferred:
-            return
+            return set()
 
+        placed: Set[str] = set()
         resume_type = self._detect_checkpoint_type(path)
         for entry in deferred:
             if not self.has_component(entry.component):
@@ -3461,7 +3461,9 @@ class BaseAdapter(ABC):
                     self._load_lora_entry(entry, path)
                 else:
                     self._load_full_model_entry(entry, path)
+            placed.add(entry.role)
         self.accelerator.wait_for_everyone()
+        return placed
 
     def _warn_about_roles_the_checkpoint_omits(
         self, path: str, entries: Sequence[CheckpointEntry]
