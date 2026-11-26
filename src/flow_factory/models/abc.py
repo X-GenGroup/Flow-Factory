@@ -1684,6 +1684,9 @@ class BaseAdapter(ABC):
         )
         base_variant = trainable_variants[0]
         registry = ComponentVariantRegistry(self)
+        training_args = getattr(self, "training_args", None)
+        copy_base = getattr(training_args, "copy_base_lora_variants", ())
+        stack_base = getattr(training_args, "stack_base_lora_variants", ())
         for variant_name in trainable_variants:
             is_base = variant_name == base_variant
             if finetune_type == "lora":
@@ -1706,6 +1709,8 @@ class BaseAdapter(ABC):
                     storage_mode=finetune_type,
                     component_routes=component_routes,
                     adapter_name=adapter_name,
+                    copy_base_lora=variant_name in copy_base,
+                    stack_base_lora=variant_name in stack_base,
                 )
             )
         registry.materialize(trainable_variants)

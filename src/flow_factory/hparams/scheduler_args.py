@@ -68,7 +68,13 @@ class SchedulerArguments(ArgABC):
         metadata={"help": "Random seed for selecting train steps."},
     )
 
+    solver: Literal["pipeline", "dpmpp_2m"] = "pipeline"
+
     def __post_init__(self):
+        if self.solver not in ("pipeline", "dpmpp_2m"):
+            raise ValueError(f"Unknown scheduler.solver {self.solver!r}")
+        if self.solver == "dpmpp_2m" and self.dynamics_type != "ODE":
+            raise ValueError("DPM++ 2M requires scheduler.dynamics_type=ODE")
         validate_replay_steps(self.replay_steps)
         available_dynamics = ["Flow-SDE", "Dance-SDE", "CPS", "ODE"]
         assert (
@@ -133,6 +139,8 @@ class SchedulerArguments(ArgABC):
     def to_dict(self) -> dict[str, Any]:
         result = super().to_dict()
         # Automatic selection preserves the existing execution identity/default.
+        if self.solver == "pipeline":
+            result.pop("solver", None)
         if self.replay_steps == "auto":
             result.pop("replay_steps")
         return result

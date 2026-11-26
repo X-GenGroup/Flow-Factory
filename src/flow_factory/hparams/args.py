@@ -490,6 +490,10 @@ class Arguments(ArgABC):
             self.scheduler_args.replay_steps, self.training_args.num_inference_steps
         )
         self._inherit_eval_video_geometry()
+        if self.scheduler_args.solver == "dpmpp_2m" and (
+            self.model_args.model_type != "sd3-5" or self.training_args.trainer_type != "itdm"
+        ):
+            raise ValueError("DPM++ 2M is supported for SD3.5 iTDM")
         self._validate_multirole_training_contract()
         if self._get_execution_contract().acquisition is AcquisitionMode.GENERATION:
             self._resolve_sampler_type()

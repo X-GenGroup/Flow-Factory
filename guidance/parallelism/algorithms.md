@@ -36,6 +36,9 @@ Offline training does not generate a training rollout. Reward-free distillation 
 rewards without adding them to the training objective. See the
 [algorithm guide](../training/algorithms.md) for losses, tuning modes and recipe settings.
 
+`itdm` does not declare the CP training contract; configuration rejects context parallelism for it,
+so it trains with data parallelism only.
+
 DMD2, TDM and TDM-R1 keep their roles in one prepared model/optimizer bundle and update them in
 separate phases. Frozen references, EMA and teacher snapshots retain their own ownership.
 Adding TP or CP does not turn these into independent data replicas or change role cadence.
