@@ -523,6 +523,38 @@ cases:
       OMP_NUM_THREADS: '1'
       CUDA_VISIBLE_DEVICES: '-1'
     model_paths: []
+- id: itdm-contracts
+  covers: [algorithm.itdm.contracts]
+  facets: [objective, roles]
+  owners:
+  - src/flow_factory/trainers/distillation/itdm.py
+  - src/flow_factory/hparams/training_args/itdm.py
+  - src/flow_factory/scheduler/dpmpp_multistep.py
+  command: [python3, -m, pytest, -q, tests/trainers/test_itdm.py, tests/trainers/test_itdm_dpm.py]
+  fixture: Shipped SD3.5 iTDM recipes, an analytic revised-velocity oracle, a recorded TTUR phase
+    schedule and diffusers DPM-Solver++ 2M as the native rollout reference.
+  fixture_kind: synthetic
+  qa: Q0
+  backend: cpu
+  topology: {nodes: 1, ranks_per_node: 1, dp_replicate: 1, dp_shard: 1, tp: 1, cp: 1, ep: 1}
+  oracle:
+    kind: numerical
+    reward: none
+    description: Parse every recipe and its role/solver admission, check the detached signed revision
+      loss and gradient, reuse of keyed time windows across TTUR phases, and DPM++ 2M rollout and
+      velocity-query parity with diffusers at 10 and 40 steps.
+  artifacts:
+  - tests/trainers/test_itdm.py
+  - tests/trainers/test_itdm_dpm.py
+  - examples/itdm/lora/sd3_5/pickscore.yaml
+  - examples/itdm/lora/sd3_5/geneval.yaml
+  - examples/itdm/lora/sd3_5/ocr.yaml
+  cost_seconds: 20
+  resources:
+    gpus: 0
+    packages: [pytest, torch, accelerate, diffusers, transformers, peft]
+    environment: {OMP_NUM_THREADS: '1', CUDA_VISIBLE_DEVICES: '-1'}
+    model_paths: []
 - id: sparse-adamw-checkpoint-cpu
   covers: [checkpoint.fsdp2_sparse_adamw.contracts]
   facets: [checkpoint, distributed]
