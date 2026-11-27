@@ -813,9 +813,18 @@ def source_plan(root: Path, plan: dict, bundle: dict) -> dict:
     return generate(root, plan["base_commit"], bundle["tested_commit"], [], [])
 
 
-def fetch_evidence(root: Path, repository: str, plan: dict) -> dict | None:
+def fetch_evidence(
+    root: Path, repository: str, plan: dict, *, pull_request: int | None = None
+) -> dict | None:
     """Prefer exact evidence, then bounded first-parent ancestors with equivalent inputs."""
-    bundle = validation_evidence.fetch_bundle(repository, plan)
+
+    def _lookup(target_plan: dict) -> dict | None:
+        found = validation_evidence.fetch_bundle(repository, target_plan)
+        if found is not None or pull_request is None:
+            return found
+        return validation_evidence.fetch_pr_comment_bundle(repository, target_plan, pull_request)
+
+    bundle = _lookup(plan)
     if bundle is not None:
         return bundle
     commits = (
@@ -836,7 +845,7 @@ def fetch_evidence(root: Path, repository: str, plan: dict) -> dict | None:
             )
         except ValueError:
             break
-        bundle = validation_evidence.fetch_bundle(repository, previous)
+        bundle = _lookup(previous)
         if bundle is not None:
             return bundle
     return None
@@ -1002,6 +1011,12 @@ def main() -> int:
     fetch.add_argument("--plan", type=Path, required=True)
     fetch.add_argument("--repository", required=True)
     fetch.add_argument("--output", type=Path, required=True)
+    fetch.add_argument(
+        "--pull-request",
+        type=int,
+        default=None,
+        help="Optional PR number for reading contributor-submitted fenced evidence comments",
+    )
     args = parser.parse_args()
     try:
         if args.action == "replay":
@@ -1045,7 +1060,7 @@ def main() -> int:
             print(validation_evidence.artifact_name(plan))
             return 0
         if args.action == "fetch-evidence":
-            bundle = fetch_evidence(ROOT, args.repository, plan)
+            bundle = fetch_evidence(ROOT, args.repository, plan, pull_request=args.pull_request)
             if bundle is not None:
                 original = source_plan(ROOT, plan, bundle)
                 validation_evidence.import_bundle(ROOT, original, bundle)

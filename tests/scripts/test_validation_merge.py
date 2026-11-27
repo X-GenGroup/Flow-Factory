@@ -50,6 +50,7 @@ def merged(scenario, monkeypatch):
         "merged": True,
         "merged_at": "2026-11-10",
         "merge_commit_sha": head,
+        "merged_by": {"login": "maintainer"},
         "base": {"sha": previous["base_commit"], "repo": {"full_name": "test/repository"}},
         "head": {"sha": previous["tested_commit"], "repo": {"full_name": "test/repository"}},
     }
@@ -106,16 +107,51 @@ def test_rejects_merge_conflict_or_rebased_base(merged, side):
         decide(merged)
 
 
-@pytest.mark.parametrize("mutation", ["unmerged", "wrong_merge", "fork"])
+@pytest.mark.parametrize("mutation", ["unmerged", "wrong_merge", "wrong_base", "missing_merger"])
 def test_rejects_unrelated_pr(merged, mutation):
     pr = merged[4]
     if mutation == "unmerged":
         pr["merged"] = False
     elif mutation == "wrong_merge":
         pr["merge_commit_sha"] = "f" * 40
+    elif mutation == "wrong_base":
+        pr["base"]["repo"]["full_name"] = "someone/other"
     else:
-        pr["head"]["repo"]["full_name"] = "someone/fork"
+        pr["merged_by"] = None
     with pytest.raises(ValueError, match="merged.*PR"):
+        decide(merged)
+
+
+@pytest.mark.parametrize("head_repo", [{"full_name": "contributor/fork"}, None])
+def test_accepts_maintainer_merged_fork_pr_with_untouched_workflow(merged, head_repo):
+    merged[4]["head"]["repo"] = head_repo
+    receipt = decide(merged)
+    assert receipt["status"] == "accepted_merged"
+    expected_repo = head_repo["full_name"] if head_repo else None
+    assert receipt["transitions"][0]["head_repository"] == expected_repo
+    assert receipt["transitions"][0]["merged_by"] == "maintainer"
+
+
+def test_rejects_merged_fork_pr_that_modifies_quality_workflow(merged, monkeypatch):
+    merged[4]["head"]["repo"] = {"full_name": "contributor/fork"}
+    orig_source = merge.agent_diff.source
+
+    def fake_source(root, rev, path, limit):
+        if path == ".github/workflows/quality.yml":
+            return b"base" if rev == merged[4]["base"]["sha"] else b"tampered"
+        return orig_source(root, rev, path, limit)
+
+    monkeypatch.setattr(merge.agent_diff, "source", fake_source)
+    with pytest.raises(ValueError, match="modifying .github/workflows/quality.yml"):
+        decide(merged)
+
+
+def test_selected_fresh_reuse_cases_skip_unselected_harness_contracts(merged, monkeypatch):
+    monkeypatch.setattr(planner, "FRESH_REUSE_CASES", {"cpu", "unselected-harness"})
+    receipt = decide(merged)
+    assert receipt["status"] == "accepted_merged"
+    monkeypatch.setattr(planner, "FRESH_REUSE_CASES", {"unselected-harness"})
+    with pytest.raises(ValueError, match="at least one selected fresh check"):
         decide(merged)
 
 

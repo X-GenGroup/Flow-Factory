@@ -19,6 +19,7 @@ on:
 permissions:
   contents: read
   actions: read
+  issues: read
   pull-requests: read
 
 concurrency:
@@ -96,11 +97,16 @@ jobs:
       - name: Read matching externally executed evidence
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          python3 scripts/quality.py validation fetch-evidence
-          --plan .scratch/validation/plan.json
-          --repository "$GITHUB_REPOSITORY"
-          --output .scratch/validation/bundle.json
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          pr_args=()
+          if [[ -n "$PR_NUMBER" ]]; then
+            pr_args=(--pull-request "$PR_NUMBER")
+          fi
+          python3 scripts/quality.py validation fetch-evidence \
+            --plan .scratch/validation/plan.json \
+            --repository "$GITHUB_REPOSITORY" \
+            --output .scratch/validation/bundle.json "${pr_args[@]}"
       - name: Read an explicitly dispatched incremental review
         env:
           GH_TOKEN: ${{ github.token }}
