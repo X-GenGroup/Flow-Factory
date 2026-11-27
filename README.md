@@ -16,7 +16,7 @@ Choose an objective and a model first, then a compatible tuning method and GPU l
 |---|---|---|
 | Model and modality | SD3.5, FLUX, Qwen Image, Z-Image, Wan, LTX-2, Bagel, SenseNova and MiniMax H3 families | [Model catalog](#-supported-models) |
 | Training paradigm | Offline demonstrations/preferences, online reward optimization, differentiable feedback, and distillation | [Feature overview](guidance/overview.md) |
-| Algorithm | 18 registered trainers, including SFT, DPO, GRPO/Guard, DiffusionART, ReFL, DRaFT-K and DRTune | [Algorithm catalog](#-supported-algorithms) |
+| Algorithm | 19 registered trainers, including SFT, DPO, GRPO/Guard, DiffusionART, iTDM, ReFL, DRaFT-K and DRTune | [Algorithm catalog](#-supported-algorithms) |
 | Tuning | Full weights or LoRA, within the selected algorithm/model contract | [Algorithm guide](guidance/training/algorithms.md) |
 | Training backend | DDP, DeepSpeed ZeRO-2 and FSDP2 | [Choose a backend](guidance/overview.md#choose-a-training-backend) |
 | Parallel layout | Model-owned TP/SP and Ulysses CP, composed with FSDP2 | [4/4/8-GPU quickstart](guidance/parallelism/quickstart.md) |
@@ -173,6 +173,7 @@ acceleration:
 | DMD2           | dmd2           | [DMD2](https://arxiv.org/abs/2405.14867) |
 | TDM            | tdm            | [Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674) |
 | TDM-R1         | tdm-r1         | [TDM-R1](https://arxiv.org/abs/2603.07700) |
+| iTDM           | itdm           | [Instantaneous Trajectory Distribution Matching](https://arxiv.org/abs/2611.30986) ([Code](https://github.com/Luo-Yihong/iTDM)) · [usage](guidance/training/algorithms.md#itdm) |
 
 See the [Algorithm guide](guidance/training/algorithms.md) for objectives and configuration.
 

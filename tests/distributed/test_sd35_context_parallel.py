@@ -23,28 +23,7 @@ import pytest
 import torch
 import torch.distributed as dist
 from conftest import run_gloo_ranks
-
-
-def build_transformer(family, head_dim=8):
-    from diffusers import SD3Transformer2DModel
-
-    heads = 24 if family == "medium" else 38
-    torch.manual_seed(620)
-    return SD3Transformer2DModel(
-        sample_size=8,
-        patch_size=2,
-        in_channels=16,
-        out_channels=16,
-        num_layers=2,
-        attention_head_dim=head_dim,
-        num_attention_heads=heads,
-        joint_attention_dim=32,
-        caption_projection_dim=heads * head_dim,
-        pooled_projection_dim=16,
-        pos_embed_max_size=8,
-        dual_attention_layers=(0,) if family == "medium" else (),
-        qk_norm="rms_norm",
-    )
+from sd35_cp_fixture import build_transformer
 
 
 def install_lora(module):

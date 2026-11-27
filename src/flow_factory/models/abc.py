@@ -3424,7 +3424,7 @@ class BaseAdapter(ABC):
             primary.setdefault(entry.component, entry)
         return list(primary.values())
 
-    def restore_training_roles(self, path: str) -> None:
+    def restore_training_roles(self, path: str) -> Set[str]:
         """Place a checkpoint's non-primary roles now that the variants exist.
 
         A weight-only resume runs while the adapter is being built, before the trainer
@@ -3434,6 +3434,10 @@ class BaseAdapter(ABC):
 
         Args:
             path: Checkpoint directory to restore from.
+
+        Returns:
+            The roles this call placed. A role the checkpoint omits is absent, so a
+            caller that derives one role from another can tell the two cases apart.
         """
         registry = getattr(self, "component_variant_registry", None)
         if registry is None:
@@ -3445,8 +3449,9 @@ class BaseAdapter(ABC):
         entries = self._checkpoint_entries(path)
         deferred = [entry for entry in entries if entry not in self._primary_entries(entries)]
         if not deferred:
-            return
+            return set()
 
+        placed: Set[str] = set()
         resume_type = self._detect_checkpoint_type(path)
         for entry in deferred:
             if not self.has_component(entry.component):
@@ -3456,7 +3461,9 @@ class BaseAdapter(ABC):
                     self._load_lora_entry(entry, path)
                 else:
                     self._load_full_model_entry(entry, path)
+            placed.add(entry.role)
         self.accelerator.wait_for_everyone()
+        return placed
 
     def _warn_about_roles_the_checkpoint_omits(
         self, path: str, entries: Sequence[CheckpointEntry]

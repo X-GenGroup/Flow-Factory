@@ -49,6 +49,12 @@ def load_scheduler(
         >>> pipe = DiffusionPipeline.from_pretrained("...")
         >>> sde_scheduler = load_scheduler(pipe.scheduler, scheduler_args)
     """
+    if scheduler_args.solver == "dpmpp_2m":
+        from .dpmpp_multistep import FlowDPMpp2MScheduler
+
+        return FlowDPMpp2MScheduler(
+            seed=scheduler_args.seed, replay_steps=scheduler_args.replay_steps
+        )
     sde_class = get_sde_scheduler_class(pipeline_scheduler)
 
     # Merge base config with SDE args

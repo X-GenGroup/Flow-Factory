@@ -32,6 +32,7 @@
    - [Reward monitoring](#reward-monitoring)
 - [TDM](#tdm)
 - [TDM-R1](#tdm-r1)
+- [iTDM](#itdm)
 - [ReFL](#refl)
 - [DRaFT-K](#draft-k)
 - [DRTune](#drtune)
@@ -70,7 +71,7 @@ online/offline selection out of model adapters and loss functions.
 At a high level, the supported algorithms fall into three paradigms:
 
 - **Coupled paradigm (GRPO and variants)**: Training timesteps are coupled with the SDE-based sampling dynamics, requiring tractable log-probability computation for policy gradient optimization.
-- **Decoupled paradigm (SFT, offline DPO, online DPO, DiffusionNFT, AWM, DGPO, CRD, TDM-R1)**: Training timesteps are decoupled from the actual sampling dynamics, allowing objective-specific timestep sampling. ART uses the same non-likelihood execution category but replays actual Euler ODE trajectories; it is not solver-agnostic.
+- **Decoupled paradigm (SFT, offline DPO, online DPO, DiffusionNFT, AWM, DGPO, CRD, TDM-R1, iTDM)**: Training timesteps are decoupled from the actual sampling dynamics, allowing objective-specific timestep sampling. ART uses the same non-likelihood execution category but replays actual Euler ODE trajectories; it is not solver-agnostic.
 - **Distillation paradigm (DiffusionOPD, DMD2, TDM)**: Students match flow-matching targets. DiffusionOPD uses a teacher; DMD2 and TDM keep a fake score on one model bundle and update it before the generator.
 
 DMD2, TDM, and TDM-R1 update fake first. TDM-R1 then updates the surrogate
@@ -1053,25 +1054,59 @@ scheduler:
 
 Each teacher's `applicable_datasets` must reference declared `data.datasets[*].name` entries (validated at config load). The config schema allows several teachers to share a dataset for a future multi-teacher/ensemble trainer, but the current `DiffusionOPDTrainer` requires exactly one teacher per dataset and raises otherwise. See [`examples/opd/lora/sd3_5/`](../../examples/opd/lora/sd3_5) for three complete configs; `DiffusionOPD_aligned.yaml` reproduces the official setup.
 
-## References
+## iTDM
 
-* <a name="ref1"></a>[1] [**Flow-GRPO:** Training Flow Matching Models via Online RL](https://arxiv.org/abs/2505.05470)
-* <a name="ref2"></a>[2] [**DanceGRPO:** Unleashing GRPO on Visual Generation](https://arxiv.org/abs/2505.07818)
-* <a name="ref3"></a>[3] [**MixGRPO:** Unlocking Flow-based GRPO Efficiency with Mixed ODE-SDE](https://arxiv.org/abs/2507.21802)
-* <a name="ref4"></a>[4] [**TempFlow-GRPO:** When Timing Matters for GRPO in Flow Models](https://arxiv.org/abs/2508.04324)
-* <a name="ref5"></a>[5] [**GRPO-Guard:** Mitigating Implicit Over-Optimization in Flow Matching via Regulated Clipping](https://arxiv.org/abs/2510.22319)
-* <a name="ref6"></a>[6] [**PaCo-RL**: Advancing Reinforcement Learning for Consistent Image Generation with Pairwise Reward Modeling](https://arxiv.org/abs/2512.04784)
-* <a name="ref7"></a>[7] [**DiffusionNFT**: Online Diffusion Reinforcement with Forward Process](https://arxiv.org/abs/2509.16117)
-* <a name="ref8"></a>[8] [**DGPO**: Reinforcing Diffusion Models by Direct Group Preference Optimization](https://arxiv.org/abs/2510.08425)
-* <a name="ref9"></a>[9] [**<u>C</u>oefficients-<u>P</u>reserving <u>S</u>ampling** for Reinforcement Learning with Flow Matching](https://arxiv.org/abs/2509.05952)
-* <a name="ref10"></a>[10] [**<u>A</u>dvantage <u>W</u>eighted <u>M</u>atching**: Aligning RL with Pretraining in Diffusion Models](https://arxiv.org/abs/2509.25050)
-* <a name="ref11"></a>[11] [**Diffusion-DPO**: Diffusion Model Alignment Using Direct Preference Optimization](https://arxiv.org/abs/2311.12908)
-* <a name="ref12"></a>[12] [**TDM-R1**: Reinforcing Few-Step Diffusion Models with Non-Differentiable Reward](https://arxiv.org/abs/2603.07700)
-* <a name="ref13"></a>[13] [**CRD**: Diffusion Reinforcement Learning via Centered Reward Distillation](https://arxiv.org/abs/2603.14128)
-* <a name="ref14"></a>[14] [**DiffusionOPD**: A Unified Perspective of On-Policy Distillation in Diffusion Models](https://arxiv.org/abs/2605.15055)
-* <a name="ref15"></a>[15] [**Flow-DPPO**: Divergence Proximal Policy Optimization for Flow Matching Models](https://arxiv.org/abs/2606.11025) ([Code](https://github.com/Tencent-Hunyuan/UniRL/tree/main/FlowDPPO#readme))
-* <a name="ref16"></a>[16] [**DMD2**: Improved Distribution Matching Distillation for Fast Image Synthesis](https://arxiv.org/abs/2405.14867)
-* <a name="ref17"></a>[17] [**TDM**: Learning Few-Step Diffusion Models by Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674)
+**Instantaneous Trajectory Distribution Matching (`itdm`)** [[18]](#ref18) is a **decoupled** online RL algorithm (`generation + runtime_reward`) that takes the infinitesimal step-size limit ($\delta \downarrow 0$) of [TDM](#tdm) [[17]](#ref17) on the local one-step transport map $T_\theta(x_t) = x_t - \delta v_\theta(x_t, t)$ toward the time-local reward-guided target $\pi_t^R(x) \propto q_t(x)\exp(m_t(x))$ with $m_t(x) = \mathbb{E}[R \mid x_t = x]$, whose score differs from the rollout behavior marginal $q_t$ purely by the reward-driven score correction $s_{\pi_t^R}(x_t) - s_{q_t}(x_t) = \nabla_x m_t(x_t)$. Via the Gaussian posterior-score identity in the instantaneous limit, $\nabla_x m_t(x_t)$ collapses into an **exact sample-level gradient anchored at the behavior marginal velocity** $v_q(x_t, t) = \mathbb{E}[\epsilon - x_0 \mid x_t]$—requiring neither trajectory backpropagation, multi-step boundary storage (`trajectory_indices=[-1]`, `compute_log_prob=False`), nor a separate reward-tilted surrogate score network, and supporting deterministic high-order ODE solvers such as `dpmpp_2m`.
+
+Existing forward-diffusion RL methods rely on signed reward-weighted regression (RWR) centered at $v_\theta$, $\mathcal{L}_{\mathrm{RWR}}^A(\theta) = \mathbb{E}\big[A\,\|(\epsilon - x_0) - v_\theta(x_t, t)\|_2^2\big]$, whose population gradient decomposes into the `itdm` gradient plus two extraneous drift terms whenever behavior–policy mismatch ($v_\theta \neq v_q$) arises under CFG rollouts, off-policy updates, or finite-step discretization: (1) **baseline-induced drift**, where subtracting a prompt baseline $b(c) > 0$ breaks baseline invariance and pushes $v_\theta$ away from $v_q$, and (2) **coarse rollout-artifact drift**, which pulls $v_\theta$ toward the coarse few-step ODE marginal $q_t$. `itdm` eliminates both drift terms at the auxiliary optimum by tracking $v_q$ online with an auxiliary `fake` (DSM) LoRA denoiser and anchoring $v_\theta$ to the frozen pretrained reference $v_{\text{ref}}$ across two sequential role phases per inner epoch:
+
+1. **Online DSM (`fake` role)**: Updated every epoch at `guidance_scale=1.0` on forward-noised states $x_t = (1 - \sigma_t) x_0 + \sigma_t \epsilon$ with target velocity $u_t = \epsilon - x_0$:
+   $$
+   \mathcal{L}_{\text{fake}}(\phi) = \mathbb{E}_{x_0, t, \epsilon}\!\left[\big\| v_\phi^{\text{fake}}(x_t, t) - (\epsilon - x_0) \big\|_2^2\right]
+   $$
+   At optimum, $v_\phi^{\text{fake}}(x_t, t) \approx v_q(x_t, t) = \mathbb{E}[\epsilon - x_0 \mid x_t]$ estimates the instantaneous behavior marginal velocity of the current generator's terminal distribution.
+2. **Advantage-revised policy (`generator` role)**: Updated every `train.ttur` acquisition cycles (`(epoch + 1) % ttur == 0`) after all `fake` updates, revisiting the **same** $(x_t, t, \epsilon)$ perturbations. Given group-normalized advantages $A(x_0)$ (`advantage_aggregation`, default `'gdpo'`) scaled and clipped as $w = \mathrm{clip}(A(x_0), -c, c) / 5$ (`c = advantage_clip_range`, default `5.0`), `itdm` forms a detached revised velocity target:
+   $$
+   \hat{v}_{\text{rev}} = \mathrm{sg}\!\Big(v_\theta(x_t, t) + w \cdot \big((\epsilon - x_0) - v_\phi^{\text{fake}}(x_t, t)\big)\Big)
+   $$
+   and minimizes the revision MSE together with optional velocity-space regularization (`kl_beta`, default `0.001`; `0` disables the reference forward) against the adapter-disabled frozen base model $v_{\text{ref}}$ queried via `use_ref_parameters()` at `train.guidance_scale`:
+   $$
+   \mathcal{L}_{\text{gen}}(\theta) = \big\| v_\theta(x_t, t) - \hat{v}_{\text{rev}} \big\|_2^2 + \beta_{\text{kl}} \big\| v_\theta(x_t, t) - v_{\text{ref}}(x_t, t) \big\|_2^2
+   $$
+
+Because $\hat{v}_{\text{rev}}$ is stop-gradient detached, minimizing $\|v_\theta - \hat{v}_{\text{rev}}\|_2^2$ yields the straight-through gradient $2 w \big(v_\phi^{\text{fake}}(x_t, t) - (\epsilon - x_0)\big) \nabla_\theta v_\theta(x_t, t)$, preserving **exact baseline invariance** for any centered advantage $A = R - b(c)$ even when $v_\theta \neq v_q$ while keeping negative-advantage updates ($w < 0$) bounded against a detached residual.
+
+```yaml
+train:
+    trainer_type: 'itdm'
+    num_inference_steps: 10
+    num_train_timesteps: 4
+    max_timestep_index: 8
+    gradient_step_per_epoch: 1
+    gradient_accumulation_steps: auto
+    ttur: 1
+    kl_beta: 0.001
+    advantage_aggregation: 'gdpo'
+    advantage_clip_range: 5.0
+scheduler:
+    dynamics_type: 'ODE'
+    solver: 'dpmpp_2m'   # Or 'pipeline' for native SD3.5 Euler
+optimizers:
+  - name: generator
+    learning_rate: 1.0e-4
+  - name: fake
+    learning_rate: 3.0e-4
+```
+
+**Cadence and shared perturbations**: Unlike `dmd2`, `tdm`, and `tdm-r1` (which repeat `fake` within one cycle via `optimizers[*].update_frequency`), `itdm` requires `update_frequency: 1` on both optimizer entries and controls cross-epoch policy cadence with `train.ttur`. Each inner epoch draws `num_train_timesteps` distinct rollout step indices without replacement from `0` through `max_timestep_index` using a rank-synchronized generator (`1 <= num_train_timesteps <= max_timestep_index + 1 <= num_inference_steps`; e.g., four indices from `0..8` on a ten-step rollout, skipping the near-clean final step). Forward-process noise is keyed by `(seed, epoch, inner_epoch, batch_offset, timestep_index, data_parallel_rank)`. Both roles and all TP/CP peers in one data replica reuse the same perturbations without storing them. By default, optimization retains rollout order. Set `train.shuffle_samples: true` to shuffle after advantage computation and reuse the same order across both roles.
+
+Keep `gradient_accumulation_steps: auto` as in the shipped recipes. After sampler alignment,
+the framework derives the number of local batches per update from the logical DP size and
+`gradient_step_per_epoch`, then multiplies by `num_train_timesteps`. Fake and generator use
+separate accumulation windows, so the number of roles does not multiply GAS. See the
+[parallelism guide](../parallelism/configuration.md) for the applicable SD3.5 TP/SP/CP settings.
+
+**Model, LoRA variants, and solver**: `itdm` requires `sd3-5` LoRA fine-tuning, `ODE` dynamics, training `rewards`, and `group_size >= 2`. Both roles share the multi-role optimizer and checkpoint runtime (default AdamW uses `learning_rate=3.0e-4` with `betas=(0.9, 0.999)` for `generator` and `betas=(0.0, 0.999)` for `fake`). The `fake` LoRA starts as a copy of the `generator` LoRA and runs standalone on the base model. The SD3.5 recipes generate 24 images for each of 24 prompts (576 images per rollout), update the policy once per epoch with the framework's standard-deviation floor on advantage normalization, and set `scheduler.solver: dpmpp_2m` (deterministic DPM-Solver++ 2M with fixed `flow_shift=3.0`) for both 10-step rollouts and 40-step evaluation; set `scheduler.solver: pipeline` to select the native SD3.5 Euler scheduler. See the [SD3.5 configurations](../../examples/itdm/lora/sd3_5).
 
 ## ReFL
 
@@ -1094,3 +1129,24 @@ clean estimate projected from an earlier stop. It retains
 parameter gradients for equally spaced denoiser predictions with detached inputs,
 while Euler updates carry the live state across every visited step. See the
 [DRTune guide](drtune.md) for the SD3.5 recipe and validation scope.
+
+## References
+
+* <a name="ref1"></a>[1] [**Flow-GRPO:** Training Flow Matching Models via Online RL](https://arxiv.org/abs/2505.05470)
+* <a name="ref2"></a>[2] [**DanceGRPO:** Unleashing GRPO on Visual Generation](https://arxiv.org/abs/2505.07818)
+* <a name="ref3"></a>[3] [**MixGRPO:** Unlocking Flow-based GRPO Efficiency with Mixed ODE-SDE](https://arxiv.org/abs/2507.21802)
+* <a name="ref4"></a>[4] [**TempFlow-GRPO:** When Timing Matters for GRPO in Flow Models](https://arxiv.org/abs/2508.04324)
+* <a name="ref5"></a>[5] [**GRPO-Guard:** Mitigating Implicit Over-Optimization in Flow Matching via Regulated Clipping](https://arxiv.org/abs/2510.22319)
+* <a name="ref6"></a>[6] [**PaCo-RL**: Advancing Reinforcement Learning for Consistent Image Generation with Pairwise Reward Modeling](https://arxiv.org/abs/2512.04784)
+* <a name="ref7"></a>[7] [**DiffusionNFT**: Online Diffusion Reinforcement with Forward Process](https://arxiv.org/abs/2509.16117)
+* <a name="ref8"></a>[8] [**DGPO**: Reinforcing Diffusion Models by Direct Group Preference Optimization](https://arxiv.org/abs/2510.08425)
+* <a name="ref9"></a>[9] [**<u>C</u>oefficients-<u>P</u>reserving <u>S</u>ampling** for Reinforcement Learning with Flow Matching](https://arxiv.org/abs/2509.05952)
+* <a name="ref10"></a>[10] [**<u>A</u>dvantage <u>W</u>eighted <u>M</u>atching**: Aligning RL with Pretraining in Diffusion Models](https://arxiv.org/abs/2509.25050)
+* <a name="ref11"></a>[11] [**Diffusion-DPO**: Diffusion Model Alignment Using Direct Preference Optimization](https://arxiv.org/abs/2311.12908)
+* <a name="ref12"></a>[12] [**TDM-R1**: Reinforcing Few-Step Diffusion Models with Non-Differentiable Reward](https://arxiv.org/abs/2603.07700)
+* <a name="ref13"></a>[13] [**CRD**: Diffusion Reinforcement Learning via Centered Reward Distillation](https://arxiv.org/abs/2603.14128)
+* <a name="ref14"></a>[14] [**DiffusionOPD**: A Unified Perspective of On-Policy Distillation in Diffusion Models](https://arxiv.org/abs/2605.15055)
+* <a name="ref15"></a>[15] [**Flow-DPPO**: Divergence Proximal Policy Optimization for Flow Matching Models](https://arxiv.org/abs/2606.11025) ([Code](https://github.com/Tencent-Hunyuan/UniRL/tree/main/FlowDPPO#readme))
+* <a name="ref16"></a>[16] [**DMD2**: Improved Distribution Matching Distillation for Fast Image Synthesis](https://arxiv.org/abs/2405.14867)
+* <a name="ref17"></a>[17] [**TDM**: Learning Few-Step Diffusion Models by Trajectory Distribution Matching](https://arxiv.org/abs/2503.06674)
+* <a name="ref18"></a>[18] [**iTDM**: Reinforcing Diffusion Models by Instantaneous Trajectory Distribution Matching](https://arxiv.org/abs/2611.30986) ([Code](https://github.com/Luo-Yihong/iTDM))

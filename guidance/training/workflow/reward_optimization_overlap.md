@@ -72,11 +72,14 @@ An async groupwise reward additionally needs every group on one rank, so it work
 | `grpo`, `grpo-guard`, `dppo`, `nft`, `awm`, `crd` | `rank_local`, `global_batch`, `global_tile`, `subgroup_tile` |
 | `dgpo` | `global_batch` |
 | `dpo` (online DPO) | `rank_local` |
+| `art` | `rank_local` |
 | `tdm-r1` | `rank_local`, `global_batch` |
 
 `global_random` and `contiguous_shard` place group members anywhere, so they are rejected. SFT,
 offline DPO, DiffusionOPD, DMD2, and reward-free TDM have no runtime reward to overlap and keep
-their ordinary execution path. All supported trainers accept both scheduling modes.
+their ordinary execution path. ReFL, DRaFT-K and DRTune consume a differentiable reward inside
+their objective, and iTDM scores rollout endpoints before its role phases, so neither overlaps a
+pending request either. All supported trainers accept both scheduling modes.
 
 ## Configuration
 

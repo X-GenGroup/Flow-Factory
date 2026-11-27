@@ -26,6 +26,7 @@ from typing import (
     Callable,
     ClassVar,
     Dict,
+    FrozenSet,
     Iterator,
     List,
     Literal,
@@ -1532,8 +1533,13 @@ class BaseTrainer(MultiRoleCheckpointingMixin, MultiRoleBackendValidationMixin, 
         # score trains against the wrong critic and reports nothing wrong.
         resume_path = getattr(self.adapter.model_args, "resume_path", None)
         resume_type = getattr(self.adapter.model_args, "resume_type", None)
+        # Roles this resume actually placed. A trainer that derives one role from
+        # another only has to seed the roles the checkpoint left untouched.
+        self.restored_training_roles: FrozenSet[str] = frozenset()
         if resume_path and resume_type != "state":
-            self.adapter.restore_training_roles(resume_path)
+            self.restored_training_roles = frozenset(
+                self.adapter.restore_training_roles(resume_path)
+            )
             # PEFT/full checkpoint loaders may materialize restored role weights
             # in fp32. FSDP1 flattens each wrapped block and rejects mixed dtypes,
             # so reapply the adapter's declared trainable dtype before prepare.

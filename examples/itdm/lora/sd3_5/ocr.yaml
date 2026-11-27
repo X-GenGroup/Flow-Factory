@@ -1,0 +1,86 @@
+# iTDM with DPM++ 2M rollout and group-normalized rewards.
+config_file: config/accelerate_configs/multi_gpu.yaml
+num_processes: 8
+mixed_precision: bf16
+model:
+  model_type: sd3-5
+  model_name_or_path: stabilityai/stable-diffusion-3.5-medium
+  finetune_type: lora
+  lora_rank: 64
+  lora_alpha: 128
+  target_modules: default
+  trainable_parameters_dtype: float32
+data:
+  datasets:
+  - name: ocr
+    dataset_dir: dataset/ocr
+    train:
+      weight: 1
+    eval:
+      split: test
+  preprocess_parallelism: global
+  force_reprocess: false
+  preprocessing_batch_size: 8
+  dataloader_num_workers: 0
+train:
+  trainer_type: itdm
+  advantage_aggregation: gdpo
+  shuffle_samples: false  # true shuffles local images before partitioning updates
+  max_epochs: 3000
+  resolution: 512
+  num_inference_steps: 10
+  guidance_scale: 1.0
+  group_size: 24
+  unique_sample_num_per_epoch: 24
+  per_device_batch_size: 8
+  gradient_step_per_epoch: 1
+  gradient_accumulation_steps: auto
+  num_inner_epochs: 1
+  enable_gradient_checkpointing: true
+  latent_storage_dtype: float32
+  ema_decay: 0.9
+  ema_update_interval: 1
+  seed: 42
+  global_std: true
+scheduler:
+  dynamics_type: ODE
+  solver: dpmpp_2m
+rewards:
+- name: ocr
+  reward_model: OCR
+  weight: 1.0
+  batch_size: 1
+  device: cpu
+  dtype: float32
+  async_reward: false
+  num_workers: 1
+  applicable_datasets:
+  - ocr
+optimizers:
+- name: generator
+  learning_rate: 0.0001
+  betas:
+  - 0.9
+  - 0.95
+  weight_decay: 0.0001
+  max_grad_norm: 1.0
+- name: fake
+  learning_rate: 0.0003
+  betas:
+  - 0.0
+  - 0.95
+  weight_decay: 0.0001
+  max_grad_norm: 1.0
+log:
+  logging_backend: wandb
+  save_dir: saves/itdm/ocr
+  save_freq: 60
+  save_model_only: false
+  run_name: itdm-ocr
+  project: Flow-Factory-iTDM
+eval:
+  eval_freq: 60
+  num_inference_steps: 40
+  guidance_scale: 1.0
+  resolution: 512
+  per_device_batch_size: 8

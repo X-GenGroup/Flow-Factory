@@ -1442,6 +1442,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "wan-cp-dmd2-tp2",
                 "wan-cp-subgroup-grpo-tp1-dp4",
                 "wan-tp-cp-subgroup-grpo-dp2",
+                "itdm-sd35-cp",
             },
         ),
         (
@@ -1532,6 +1533,7 @@ def test_original_dtype_changes_require_real_mixed_precision_roles():
                 "sensenova-sp-pointwise-head-reference",
                 "qwen-edit-text-sp-cp-reference",
                 "sd35-text-sp-cp-reference",
+                "itdm-sd35-cp",
             },
         ),
         (
@@ -1595,7 +1597,7 @@ def test_native_fixture_catalog_binds_transitive_local_imports_and_explicit_reci
             for path in case["artifacts"]
         )
     }
-    assert len(selected) == 11
+    assert len(selected) == 12
     directory = ROOT / "tests/distributed"
     for name, case in selected.items():
         artifacts = set(case["artifacts"])
@@ -2054,6 +2056,9 @@ def test_flux_tp_cp_catalog_preserves_cp_identity_and_binds_runtime_topology(
                 "flux3-guard-ordered-full",
                 "minimax_h3-refiner-sp-cuda",
                 "z_image-refiner-sp-cuda",
+                "itdm-sd35-cp",
+                "sd35-adaln-tp2-supervised-update",
+                "sd35-tp-sp-cp-reference",
             },
         ),
         ("test_flux_packed_dmd2.py", set()),
@@ -2501,6 +2506,7 @@ def test_accelerator_sparse_load_keeps_generic_loader_regressions():
                 "sensenova-sp-pointwise-head-reference",
                 "qwen-edit-text-sp-cp-reference",
                 "sd35-text-sp-cp-reference",
+                "itdm-sd35-cp",
             },
         ),
     ],

@@ -23,14 +23,23 @@ import pytest
 import torch
 from accelerate import Accelerator
 
-from flow_factory.hparams import TDMR1TrainingArguments
+from flow_factory.hparams import ITDMTrainingArguments, TDMR1TrainingArguments
 from flow_factory.hparams.training_args._registry import list_registered_training_args
-from flow_factory.samples import LatentState, MultiModalStepOutput
+from flow_factory.models.abc import BaseAdapter
+from flow_factory.samples import (
+    BaseSample,
+    ComponentTimes,
+    ComponentTrajectory,
+    LatentState,
+    MultiModalStepOutput,
+    StructuredTrajectory,
+)
 from flow_factory.trainers.abc import BaseTrainer
 from flow_factory.trainers.common import context_parallel
 from flow_factory.trainers.distillation.distillation_runtime import pop_distillation_metrics
 from flow_factory.trainers.distillation.tdm_r1 import TDMR1Trainer
 from flow_factory.trainers.registry import get_trainer_class, list_registered_trainers
+from flow_factory.trainers.rl.itdm import ITDMTrainer
 from flow_factory.trainers.role_optimization import OptimizationRole, RoleOptimizationCoordinator
 from flow_factory.utils.group_coordinator import GroupCoordinator
 from tests.models.minimax_h3 import test_no_weight_production_acceptance as h3
@@ -294,6 +303,109 @@ def _euler_reward_trainer(name):
     return trainer, samples, parameters
 
 
+class _ITDMAdapter(tdm.ObjectiveTDMAdapter):
+    """Narrow the TDM role fixture to SD3.5's single latent component."""
+
+    trajectory_component_order = ("latent",)
+
+    def build_training_component_times(self, primary_timesteps, *, batch=None):
+        del batch
+        zeros = torch.zeros_like(primary_timesteps)
+        return ComponentTimes(
+            timestep={"latent": primary_timesteps},
+            next_timestep={"latent": zeros},
+            sigma={"latent": primary_timesteps / 1000},
+            next_sigma={"latent": zeros},
+        )
+
+
+def _itdm_trainer(metrics):
+    """Run real fake/generator phases, including the KL reference query."""
+    template, _, bundle = tdm._objective_trainer()
+    trainer = object.__new__(ITDMTrainer)
+    trainer.__dict__.update(template.__dict__)
+    trainer.adapter = _ITDMAdapter(bundle)
+    trainer.adapter.scheduler_group = {"latent": SimpleNamespace(dynamics_type="ODE")}
+    trainer.training_args = SimpleNamespace(
+        per_device_batch_size=1,
+        gradient_accumulation_steps=2,
+        num_train_timesteps=2,
+        max_timestep_index=1,
+        num_inner_epochs=1,
+        shuffle_samples=False,
+        ttur=1,
+        seed=0,
+        guidance_scale=1.0,
+        advantage_clip_range=5.0,
+        kl_beta=0.01,
+    )
+    trainer._role_update_plan = lambda: ITDMTrainingArguments().role_update_plan({})
+    samples = []
+    for index, advantage in enumerate((1.5, -0.5)):
+        schedule = torch.tensor([1000.0, 500.0, 0.0])
+        sample = BaseSample(
+            prompt_embeds=torch.tensor([1.0]),
+            sampling_sample_id=index,
+            timesteps=schedule,
+            trajectory=StructuredTrajectory(
+                components={
+                    "latent": ComponentTrajectory(
+                        states=torch.arange(3.0).reshape(3, 1, 1, 1),
+                        timesteps=schedule,
+                        sigmas=schedule / 1000,
+                        state_index_map=torch.tensor([0, 1, 2]),
+                    )
+                }
+            ),
+        )
+        sample.extra_kwargs["advantage"] = torch.tensor(advantage)
+        samples.append(sample)
+    for group in trainer.optimizer.param_groups:
+        group["lr"] = 0.0
+
+    def log_data(data, **kwargs):
+        for role in trainer.optimization_roles:
+            metrics[role].append(data[f"train/{role}_loss"])
+
+    trainer.log_data = log_data
+    return trainer, tuple(bundle.parameters()), samples
+
+
+def test_itdm_replays_the_same_perturbations_across_roles_and_model_peers():
+    trainer, _, samples = _itdm_trainer(defaultdict(list))
+    perturbations = []
+
+    def observe(clean, times, *, generator):
+        noised = BaseAdapter.add_forward_process_noise(
+            trainer.adapter, clean, times, generator=generator
+        )
+        perturbations.append(noised.state.components["latent"])
+        return noised
+
+    trainer.adapter.add_forward_process_noise = observe
+
+    def draw(rank, *, parallelism_config=None):
+        trainer.accelerator = SimpleNamespace(
+            device=torch.device("cpu"),
+            num_processes=2 if parallelism_config is None else 4,
+            process_index=rank,
+            parallelism_config=parallelism_config,
+        )
+        for role in ("fake", "generator"):
+            with trainer.adapter.use_component_variant(role):
+                trainer._loss(samples, 0, role, (0, 0))
+        torch.testing.assert_close(perturbations[-2], perturbations[-1], rtol=0, atol=0)
+        return perturbations[-1]
+
+    replica_zero = draw(0)
+    assert not torch.equal(replica_zero, draw(1))
+    plan = SimpleNamespace(dp_shard_size=1, dp_replicate_size=1, tp_size=2, cp_size=2)
+    for rank in range(4):
+        torch.testing.assert_close(
+            draw(rank, parallelism_config=plan), replica_zero, rtol=0, atol=0
+        )
+
+
 def _case(name, monkeypatch):
     """Build real objective entry points; new registry entries must supply a case."""
     metrics = defaultdict(list)
@@ -330,6 +442,9 @@ def _case(name, monkeypatch):
             data["train/distill_loss"]
         )
         return trainer, parameters, lambda: trainer.optimize(samples), metrics, 1
+    elif name == "itdm":
+        trainer, parameters, samples = _itdm_trainer(metrics)
+        return trainer, parameters, lambda: trainer.optimize(samples), metrics, 2
     elif name in {"dmd2", "tdm", "tdm-r1"}:
         if name == "dmd2":
             trainer, _, bundle = dmd._real_objective_trainer()
