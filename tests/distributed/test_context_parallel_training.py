@@ -77,6 +77,7 @@ def _config(root, result_dir, options):
             },
             "train": {
                 "trainer_type": "sft",
+                "condition_dropout": options.get("condition_dropout", 0.0),
                 "max_epochs": options.get("epochs", 2),
                 "gradient_accumulation_steps": 2,
                 "ema_decay": options.get("ema_decay", 0),

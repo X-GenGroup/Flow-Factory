@@ -885,7 +885,7 @@ def _assert_ordered_continuation(initial, continuation, *, tiles, check_objectiv
         )
         if index > tiles
     ]
-    identities = []
+    identities, exempted = [], []
     for worker, records in ((initial, expected), (continuation, joined)):
         _assert_final_optimizer_state(worker)
         final, last = worker["final"], records["updates"][-1]
@@ -893,10 +893,27 @@ def _assert_ordered_continuation(initial, continuation, *, tiles, check_objectiv
         identity = copy.deepcopy(
             {key: value for key, value in final.items() if key not in ("parameters", "moments")}
         )
-        # EMA values follow each independently checked trajectory. Its metadata,
-        # all other runtime children, progress and both device RNG states stay exact.
-        del identity["runtime"]["children"]["adapter_ema"]["ema_parameters"]
+        # Accumulated EMA values follow each independently checked trajectory,
+        # so they land within FP32 accumulation rounding of each other rather
+        # than bit-identically. The policy EMA (`adapter_ema`) is proven per
+        # worker by `_assert_ema_trajectory` above, and DGPO's adaptive
+        # reference EMA (`ema_ref`) is proven per worker by its recorded
+        # `_update_ema_ref` observations. Frozen references such as
+        # `adapter_reference` never accumulate updates and stay exact. Each
+        # child's metadata and update count, all other runtime children,
+        # progress and both device RNG states stay exact.
+        exempted.append(
+            sorted(
+                name
+                for name, child in identity["runtime"]["children"].items()
+                if name in ("adapter_ema", "ema_ref")
+                and isinstance(child, dict)
+                and child.pop("ema_parameters", None) is not None
+            )
+        )
         identities.append(identity)
+    assert exempted[0] == exempted[1], exempted
+    assert "adapter_ema" in exempted[0], exempted[0]
     _compare(*identities, exact=True)
     return {
         "contract": "exact_restore_first_update_own_continuation_v1",
