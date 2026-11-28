@@ -154,9 +154,7 @@ def validate_flow_match_coordinates(
             )
         else:
             # Combine on device so accelerators synchronize once, not per bound.
-            valid = bool(
-                (t_lo >= 0) & (t_hi <= TIMESTEP_MAX) & (sigma_lo >= 0) & (sigma_hi <= 1)
-            )
+            valid = bool((t_lo >= 0) & (t_hi <= TIMESTEP_MAX) & (sigma_lo >= 0) & (sigma_hi <= 1))
     if not valid:
         raise ValueError(
             f"expected {identifier} timestep and sigma finite with timestep in "

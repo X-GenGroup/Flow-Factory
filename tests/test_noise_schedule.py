@@ -77,6 +77,41 @@ def test_flow_match_coordinates_reject_clamped_out_of_range_values() -> None:
 
 
 @pytest.mark.parametrize(
+    "t_values,s_values",
+    [
+        ([0.0, float("nan"), 500.0], [0.0, 0.5, 0.5]),
+        ([0.0, 500.0, 1000.0], [0.0, float("nan"), 1.0]),
+        ([float("inf")], [0.5]),
+        ([500.0], [float("-inf")]),
+        ([-0.1], [0.0]),
+        ([500.0], [-0.01]),
+        ([500.0], [1.01]),
+    ],
+)
+def test_flow_match_coordinates_reject_nonfinite_and_out_of_bounds_via_aminmax(
+    t_values: list[float], s_values: list[float]
+) -> None:
+    with pytest.raises(ValueError, match=r"timestep.*\[0, 1000\].*sigma.*\[0, 1\]"):
+        validate_flow_match_coordinates(
+            torch.tensor(t_values, dtype=torch.float32),
+            torch.tensor(s_values, dtype=torch.float32),
+        )
+
+
+def test_flow_match_coordinates_accept_empty_scalar_and_mixed_dtype_exact_fast_path() -> None:
+    validate_flow_match_coordinates(torch.empty(0), torch.empty(0))
+    validate_flow_match_coordinates(torch.tensor(500.0), torch.tensor(0.5))
+    validate_flow_match_coordinates(
+        torch.tensor([0.0, 500.0, 1000.0], dtype=torch.bfloat16),
+        torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32),
+    )
+    validate_flow_match_coordinates(
+        torch.tensor([0, 500, 1000], dtype=torch.int64),
+        torch.tensor([0.0, 0.5, 1.0], dtype=torch.float32),
+    )
+
+
+@pytest.mark.parametrize(
     "timesteps",
     [
         torch.tensor([-1.0]),
