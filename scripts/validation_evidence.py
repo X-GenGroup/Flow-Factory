@@ -23,6 +23,7 @@ import gzip
 import hashlib
 import io
 import json
+import re
 import subprocess
 import zipfile
 import zlib
@@ -32,6 +33,11 @@ import validate_validation_plan as validator
 
 MAX_BUNDLE_BYTES = 60000
 MAX_DECODED_BUNDLE_BYTES = 2 * 1024 * 1024
+_PR_COMMENT_FENCE_RE = re.compile(
+    r"```(?:json\s+)?validation-evidence[ \t]*\r?\n(.*?)\r?\n```",
+    re.DOTALL,
+)
+_TRUSTED_COMMENT_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 _BUNDLE_FIELDS = {"schema_version", "base_commit", "tested_commit", "results", "files"}
 _ENVELOPE_FIELDS = {
     "schema_version",
@@ -266,4 +272,63 @@ def fetch_bundle(repository: str, plan: dict) -> dict | None:
             ):
                 raise ValueError("Unexpected evidence archive contents")
             return json.loads(archive.read(entries[0]))
+    return None
+
+
+def _extract_comment_bundles(body: str) -> list[str]:
+    """Return fenced ``validation-evidence`` payloads from one PR comment body."""
+    if not isinstance(body, str) or "validation-evidence" not in body:
+        return []
+    return [match.group(1).strip() for match in _PR_COMMENT_FENCE_RE.finditer(body)]
+
+
+def fetch_pr_comment_bundle(repository: str, plan: dict, pull_number: int) -> dict | None:
+    """Read the newest matching bounded evidence bundle posted on a PR by its author or maintainers.
+
+    Community contributors on fork PRs cannot invoke ``workflow_dispatch`` on the
+    base repository. They may post their bounded ``bundle.json`` inside a fenced
+    `` ```validation-evidence ```` block on the PR so CI can verify hashes, plan
+    identity, and observations without executing any shell command from the bundle.
+    Merge authority remains exclusively with repository maintainers/developers.
+    """
+    if type(pull_number) is not int or pull_number <= 0:
+        raise ValueError(f"Expected positive integer pull_number, received {pull_number!r}")
+    pr = json.loads(
+        subprocess.check_output(["gh", "api", f"repos/{repository}/pulls/{pull_number}"])
+    )
+    pr_author = (pr.get("user") or {}).get("login")
+    raw_comments = subprocess.check_output(
+        ["gh", "api", f"repos/{repository}/issues/{pull_number}/comments?per_page=100"]
+    )
+    comments = sorted(
+        json.loads(raw_comments),
+        key=lambda item: (item.get("created_at", ""), int(item.get("id", 0))),
+        reverse=True,
+    )
+    for comment in comments:
+        author = (comment.get("user") or {}).get("login")
+        association = comment.get("author_association")
+        if author != pr_author and association not in _TRUSTED_COMMENT_ASSOCIATIONS:
+            continue
+        for payload in reversed(_extract_comment_bundles(comment.get("body", ""))):
+            if len(payload.encode("utf-8")) > MAX_BUNDLE_BYTES:
+                raise ValueError(
+                    f"PR #{pull_number} comment {comment.get('id')} evidence bundle exceeds 60 KB"
+                )
+            try:
+                bundle = json.loads(payload)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"PR #{pull_number} comment {comment.get('id')} contains invalid "
+                    "validation-evidence JSON"
+                ) from exc
+            if not isinstance(bundle, dict):
+                raise ValueError(
+                    f"PR #{pull_number} comment {comment.get('id')} evidence bundle must be a mapping"
+                )
+            if (
+                bundle.get("base_commit") == plan["base_commit"]
+                and bundle.get("tested_commit") == plan["tested_commit"]
+            ):
+                return bundle
     return None

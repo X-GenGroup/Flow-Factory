@@ -39,6 +39,7 @@ import validation_plan as planner
 MAX_COMMITS = 32
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
 MAX_CONTENT_BYTES = 32 * 1024 * 1024
+_FORK_PROTECTED_WORKFLOWS = (".github/workflows/quality.yml",)
 require = acceptance.require
 
 
@@ -46,29 +47,45 @@ def _json(repository: str, suffix: str) -> dict | list:
     return json.loads(acceptance._api(repository, suffix))
 
 
-def _ensure_commit(root: Path, commit: str) -> None:
+def _ensure_commit(root: Path, commit: str, *, pull_number: int | None = None) -> None:
     validator.digest(commit, 40, "PR source commit")
     try:
         agent_diff.commit(root, commit)
+        return
     except subprocess.CalledProcessError:
+        pass
+    try:
         agent_diff.git(root, "fetch", "--no-tags", "origin", commit)
+    except subprocess.CalledProcessError:
+        if pull_number is None:
+            raise
+        agent_diff.git(root, "fetch", "--no-tags", "origin", f"refs/pull/{pull_number}/head")
+    agent_diff.commit(root, commit)
 
 
 def _tree(root: Path, commit: str) -> str:
     return agent_diff.git(root, "rev-parse", f"{commit}^{{tree}}").decode().strip()
 
 
-def verify_transition(root: Path, repository: str, parent: str, commit: str, pr: dict) -> None:
-    """Require a merged same-repository PR and exact before/after tree equality."""
+def verify_transition(root: Path, repository: str, parent: str, commit: str, pr: dict) -> dict:
+    """Require a maintainer-merged PR into this repository and exact tree equality.
+
+    Community fork PRs are accepted after merge once their original PR checks
+    passed and a repository maintainer/developer merged them, provided the fork
+    PR did not alter the quality workflow that produced its PR report artifact.
+    """
+    merged_by = (pr.get("merged_by") or {}).get("login")
     require(
         pr.get("merged") is True
         and pr.get("merge_commit_sha") == commit
         and pr["base"]["repo"]["full_name"] == repository
-        and pr["head"]["repo"]["full_name"] == repository,
-        "Transition is not a merged same-repository PR",
+        and isinstance(merged_by, str)
+        and bool(merged_by.strip()),
+        "Transition is not a maintainer-merged PR into this repository",
     )
-    for side in ("base", "head"):
-        _ensure_commit(root, pr[side]["sha"])
+    head_repo = ((pr.get("head") or {}).get("repo") or {}).get("full_name")
+    _ensure_commit(root, pr["base"]["sha"])
+    _ensure_commit(root, pr["head"]["sha"], pull_number=pr.get("number"))
     require(
         _tree(root, parent) == _tree(root, pr["base"]["sha"]),
         "PR base tree differs from merge parent",
@@ -77,6 +94,19 @@ def verify_transition(root: Path, repository: str, parent: str, commit: str, pr:
         _tree(root, commit) == _tree(root, pr["head"]["sha"]),
         "PR head tree differs from merged tree",
     )
+    if head_repo != repository:
+        for workflow_path in _FORK_PROTECTED_WORKFLOWS:
+            base_blob = agent_diff.source(
+                root, pr["base"]["sha"], workflow_path, agent_diff.MAX_SOURCE_BYTES
+            )
+            head_blob = agent_diff.source(
+                root, pr["head"]["sha"], workflow_path, agent_diff.MAX_SOURCE_BYTES
+            )
+            require(
+                base_blob == head_blob,
+                f"Fork PR modifying {workflow_path} cannot be accepted after merge",
+            )
+    return {"head_repository": head_repo, "merged_by": merged_by}
 
 
 def read_archive(raw: bytes) -> dict[str, bytes]:
@@ -248,7 +278,10 @@ def decide(root: Path, repository: str, plan: dict, summary: dict, current: dict
     require(
         "fail" not in summary["cases"].values(), "Current failures cannot be accepted after merge"
     )
-    for name in planner.FRESH_REUSE_CASES:
+    selected_cases = {case["id"] for case in plan["cases"] if case["selected"]}
+    fresh_cases = sorted(planner.FRESH_REUSE_CASES & selected_cases)
+    require(bool(fresh_cases), "Merge acceptance requires at least one selected fresh check")
+    for name in fresh_cases:
         require(summary["cases"].get(name) == "pass", f"Merge acceptance requires fresh {name}")
         row = next(row for row in current["cases"] if row["id"] == name)
         require(
@@ -276,7 +309,7 @@ def decide(root: Path, repository: str, plan: dict, summary: dict, current: dict
         ]
         require(len(matches) == 1, f"Missing/ambiguous merged PR for {commit}")
         pr = _json(repository, f"pulls/{matches[0]['number']}")
-        verify_transition(root, repository, parent, commit, pr)
+        transition = verify_transition(root, repository, parent, commit, pr)
         files, artifact = fetch_report(repository, pr)
         source = verify_report(root, repository, pr, files, baseline_cache=baseline_cache)
         receipts.append(
@@ -284,6 +317,7 @@ def decide(root: Path, repository: str, plan: dict, summary: dict, current: dict
                 "merge_commit": commit,
                 "parent_commit": parent,
                 "pull_request": pr["number"],
+                **transition,
                 **artifact,
                 **source,
             }

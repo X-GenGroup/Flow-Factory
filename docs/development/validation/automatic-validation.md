@@ -140,6 +140,20 @@ manual-evidence workflow artifacts and validates their contents again. It never 
 commands received in a bundle. A recorded GPU result remains operator-supplied evidence;
 reviewers should inspect the assertions and logs, not infer that hosted CI ran the GPU job.
 
+Community contributors on fork PRs cannot invoke `workflow_dispatch` on the base repository.
+When no `workflow_dispatch` artifact exists for the commit, `fetch-evidence --pull-request N`
+also checks comments posted by the PR author (or repository maintainers/collaborators) for a
+bounded (<= 60 KB) JSON bundle inside a fenced `validation-evidence` block:
+
+````markdown
+```validation-evidence
+{"schema_version": 2, ...}
+```
+````
+
+The same schema, hash, plan, and log validations apply, no command from the bundle is ever
+executed, and merging the PR still requires a repository maintainer or developer.
+
 This first CI integration consumes the default generated plan. Keep reviewer-added `--case` or
 `--require` selections in a separate local plan and report; their different plan hash does not
 replace evidence for the default CI plan. Reusable mandatory coverage belongs in the reviewed
@@ -249,9 +263,11 @@ case report remains unchanged. A blocked historical case is not rewritten as a c
 
 For every transition the verifier requires:
 
-1. One GitHub-recorded merged PR from this repository. Stack PRs may retain their original branch
-   base; its complete Git tree must equal the actual merge parent's tree, and the PR head tree
-   must equal the merged tree. Squash merges therefore work without inventing commit ancestry.
+1. One GitHub-recorded PR merged into this repository by a maintainer/developer (`merged_by`).
+   Both same-repository PRs and community fork PRs are accepted, provided fork PRs did not modify
+   `.github/workflows/quality.yml`. Stack PRs may retain their original branch base; its complete
+   Git tree must equal the actual merge parent's tree, and the PR head tree must equal the merged
+   tree. Squash merges therefore work without inventing commit ancestry.
 2. The latest original PR quality run and attempt must have succeeded. Its unexpired
    `validation-report-RUN-ATTEMPT` artifact must contain the original plan, CPU observations and
    report. An older green attempt cannot hide a newer failed run.
@@ -259,8 +275,9 @@ For every transition the verifier requires:
    external bundle are checked by the existing result validator. An incremental review is
    recomputed against its authenticated original baseline artifacts; the uploaded report must
    exactly match the recomputed decision.
-4. The current merge still passes fresh `harness-contracts` and `repository-consistency` tests.
-   Current failures or uncovered selections cannot be accepted by carrying historical evidence.
+4. Every selected fresh check (`repository-consistency`, and `harness-contracts` when selected)
+   passes freshly on the current merge. Current failures or uncovered selections cannot be
+   accepted by carrying historical evidence.
 
 The resulting receipt records each PR, merge and parent SHA, original source base/head and plan
 hash, run/attempt, artifact ID/hash, qualification status and incremental acceptance. It certifies
@@ -277,7 +294,8 @@ python3 scripts/quality.py validation report --plan PLAN.json --results CPU.json
 
 Use the original push comparison base when generating `PLAN.json`. The verifier does not narrow
 that base to skip unaccepted changes. It admits at most 32 transitions and refuses direct commits,
-ambiguous PRs, fork PRs, changed/conflicted source trees, missing/expired artifacts and unsupported
+ambiguous PRs, fork PRs that alter `.github/workflows/quality.yml`, changed/conflicted source trees,
+missing/expired artifacts and unsupported
 reports. These cases need explicit source review/evidence; changing a label or rerunning old CI
 cannot manufacture that proof. An old main run executes the old workflow: validating it with the
 new verifier does not retroactively change its GitHub check result.

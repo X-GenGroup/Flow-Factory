@@ -2360,6 +2360,77 @@ def test_fetch_prefers_exact_and_stops_at_changed_execution_inputs(plan, monkeyp
     assert visited == ["previous"]
 
 
+def test_fetch_pr_comment_bundle_accepts_author_and_maintainer_only(plan, monkeypatch):
+    expected = {
+        "schema_version": 1,
+        "base_commit": plan["base_commit"],
+        "tested_commit": plan["tested_commit"],
+        "results": {},
+        "files": {},
+    }
+    stale = {**expected, "tested_commit": "0" * 40}
+    fenced = lambda obj: "Summary\n```validation-evidence\n" + json.dumps(obj) + "\n```\n"
+    pr = {"number": 42, "user": {"login": "contributor"}}
+    comments = [
+        {
+            "id": 1,
+            "created_at": "2026-11-27T01:00:00Z",
+            "user": {"login": "contributor"},
+            "author_association": "NONE",
+            "body": fenced(stale),
+        },
+        {
+            "id": 2,
+            "created_at": "2026-11-27T02:00:00Z",
+            "user": {"login": "driveby"},
+            "author_association": "NONE",
+            "body": fenced(expected),
+        },
+        {
+            "id": 3,
+            "created_at": "2026-11-27T03:00:00Z",
+            "user": {"login": "contributor"},
+            "author_association": "NONE",
+            "body": fenced(expected),
+        },
+    ]
+
+    def fake_output(argv):
+        endpoint = argv[-1]
+        if endpoint.endswith("/pulls/42"):
+            return json.dumps(pr).encode()
+        if "/issues/42/comments" in endpoint:
+            return json.dumps(comments).encode()
+        raise AssertionError(endpoint)
+
+    monkeypatch.setattr(transport.subprocess, "check_output", fake_output)
+    assert transport.fetch_pr_comment_bundle("owner/repo", plan, 42) == expected
+
+    # Drive-by commenter alone must be ignored
+    comments.pop()
+    assert transport.fetch_pr_comment_bundle("owner/repo", plan, 42) is None
+
+    # Collaborator comment is trusted even when distinct from PR author
+    comments.append(
+        {
+            "id": 4,
+            "created_at": "2026-11-27T04:00:00Z",
+            "user": {"login": "maintainer"},
+            "author_association": "COLLABORATOR",
+            "body": fenced(expected),
+        }
+    )
+    assert transport.fetch_pr_comment_bundle("owner/repo", plan, 42) == expected
+
+    # workflow_dispatch artifact takes priority over PR comment
+    monkeypatch.setattr(transport, "fetch_bundle", lambda repo, p: {"from_dispatch": True})
+    assert planner.fetch_evidence(ROOT, "owner/repo", plan, pull_request=42) == {
+        "from_dispatch": True
+    }
+    monkeypatch.setattr(transport, "fetch_bundle", lambda repo, p: None)
+    assert planner.fetch_evidence(ROOT, "owner/repo", plan, pull_request=42) == expected
+
+
 @pytest.mark.parametrize(
     "path,expected",
     [
